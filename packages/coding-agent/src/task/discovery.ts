@@ -164,6 +164,7 @@ export async function discoverAgents(
  * Get an agent by name from discovered agents.
  */
 export function getAgent(agents: AgentDefinition[], name: string): AgentDefinition | undefined {
+	if (!name || typeof name !== "string") return undefined;
 	const direct = agents.find(a => a.name === name);
 	if (direct) return direct;
 	const normalized = name.toLowerCase().replace(/_/g, "-");
