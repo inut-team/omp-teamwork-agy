@@ -174,5 +174,51 @@ export async function discoverAgents(
  * Get an agent by name from discovered agents.
  */
 export function getAgent(agents: AgentDefinition[], name: string): AgentDefinition | undefined {
-	return agents.find(a => a.name === name);
+	const direct = agents.find(a => a.name === name);
+	if (direct) return direct;
+	const normalized = name.toLowerCase().replace(/_/g, "-");
+	const byNormalized = agents.find(a => a.name.toLowerCase().replace(/_/g, "-") === normalized);
+	if (byNormalized) return byNormalized;
+	if (
+		normalized === "teamwork" ||
+		normalized === "teamwork-preview" ||
+		normalized === "teamwork-preview-orchestrator" ||
+		normalized === "orchestrator"
+	) {
+		return agents.find(a => a.name === "teamwork-orchestrator");
+	}
+	if (normalized === "teamwork-preview-explorer" || normalized === "explorer") {
+		return agents.find(a => a.name === "teamwork-explorer");
+	}
+	if (
+		normalized === "teamwork-preview-worker" ||
+		normalized === "teamwork-preview-implementer" ||
+		normalized === "teamwork-implementer" ||
+		normalized === "worker" ||
+		normalized === "implementer"
+	) {
+		return agents.find(a => a.name === "teamwork-worker");
+	}
+	if (normalized === "teamwork-preview-reviewer") {
+		return agents.find(a => a.name === "teamwork-reviewer");
+	}
+	if (normalized === "teamwork-preview-challenger" || normalized === "challenger") {
+		return agents.find(a => a.name === "teamwork-challenger");
+	}
+	if (
+		normalized === "teamwork-preview-auditor" ||
+		normalized === "teamwork-preview-forensic-auditor" ||
+		normalized === "forensic-auditor" ||
+		normalized === "auditor"
+	) {
+		return agents.find(a => a.name === "teamwork-auditor");
+	}
+	if (
+		normalized === "teamwork-preview-victory-auditor" ||
+		normalized === "victory-auditor" ||
+		normalized === "victory-verifier"
+	) {
+		return agents.find(a => a.name === "teamwork-victory-auditor");
+	}
+	return undefined;
 }
