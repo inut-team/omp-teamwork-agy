@@ -12,6 +12,13 @@ import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import teamworkAuditorMd from "../prompts/agents/teamwork-auditor.md" with { type: "text" };
+import teamworkChallengerMd from "../prompts/agents/teamwork-challenger.md" with { type: "text" };
+import teamworkExplorerMd from "../prompts/agents/teamwork-explorer.md" with { type: "text" };
+import teamworkOrchestratorMd from "../prompts/agents/teamwork-orchestrator.md" with { type: "text" };
+import teamworkReviewerMd from "../prompts/agents/teamwork-reviewer.md" with { type: "text" };
+import teamworkVictoryAuditorMd from "../prompts/agents/teamwork-victory-auditor.md" with { type: "text" };
+import teamworkWorkerMd from "../prompts/agents/teamwork-worker.md" with { type: "text" };
 import { AUTO_THINKING } from "../thinking";
 
 import type { AgentDefinition, AgentSource } from "./types";
@@ -69,6 +76,13 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		},
 		template: taskMd,
 	},
+	{ fileName: "teamwork-orchestrator.md", template: teamworkOrchestratorMd },
+	{ fileName: "teamwork-explorer.md", template: teamworkExplorerMd },
+	{ fileName: "teamwork-worker.md", template: teamworkWorkerMd },
+	{ fileName: "teamwork-reviewer.md", template: teamworkReviewerMd },
+	{ fileName: "teamwork-challenger.md", template: teamworkChallengerMd },
+	{ fileName: "teamwork-auditor.md", template: teamworkAuditorMd },
+	{ fileName: "teamwork-victory-auditor.md", template: teamworkVictoryAuditorMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.
