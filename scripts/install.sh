@@ -13,6 +13,12 @@ set -e
 REPO="${OMP_REPO:-inut-team/omp-teamwork-agy}"
 INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
 MIN_BUN_VERSION="1.3.14"
+if ! command -v curl >/dev/null 2>&1; then
+    echo "Error: 'curl' is required to run the OMP installer."
+    echo "Please install curl using your package manager and try again."
+    exit 1
+fi
+
 
 # Parse arguments
 MODE="binary"
@@ -241,23 +247,31 @@ install_binary() {
 
     echo "Target version: ${LATEST}"
     mkdir -p "$INSTALL_DIR"
+    TMP_BINARY="${INSTALL_DIR}/.omp.tmp.$$"
+    trap 'rm -f "$TMP_BINARY"' EXIT INT TERM
 
     BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
     echo "Downloading ${BINARY} from ${BINARY_URL}..."
-    if ! curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "${INSTALL_DIR}/omp"; then
+    if ! curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$TMP_BINARY"; then
         echo "Failed to download ${BINARY} from ${BINARY_URL}"
+        rm -f "$TMP_BINARY"
         exit 1
     fi
 
-    chmod +x "${INSTALL_DIR}/omp"
+    chmod +x "$TMP_BINARY"
 
-    # Verify freshly downloaded binary
-    if ! SMOKE_OUTPUT="$("${INSTALL_DIR}/omp" --version 2>&1)"; then
+    # Verify freshly downloaded binary before replacing existing installation
+    if ! SMOKE_OUTPUT="$("$TMP_BINARY" --version 2>&1)"; then
         echo ""
-        echo "✗ omp was downloaded to ${INSTALL_DIR}/omp but failed to run:"
+        echo "✗ Downloaded binary failed smoke test verification:"
         echo "$SMOKE_OUTPUT" | sed 's/^/    /'
+        rm -f "$TMP_BINARY"
         exit 1
     fi
+
+    # Atomically replace destination binary
+    mv -f "$TMP_BINARY" "${INSTALL_DIR}/omp"
+    trap - EXIT INT TERM
 
     echo ""
     echo "✓ Successfully installed omp (${LATEST}) to ${INSTALL_DIR}/omp"
