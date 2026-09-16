@@ -1,0 +1,130 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v18.1.17)"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark as prerelease"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+            cross_target: linux-x64
+            binary_name: omp-linux-x64
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            cross_target: linux-arm64
+            binary_name: omp-linux-arm64
+          - target: darwin-x64
+            os: macos-13
+            cross_target: darwin-x64
+            binary_name: omp-darwin-x64
+          - target: darwin-arm64
+            os: macos-14
+            cross_target: darwin-arm64
+            binary_name: omp-darwin-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Build binary
+        working-directory: packages/coding-agent
+        env:
+          CROSS_TARGET: ${{ matrix.cross_target }}
+        run: bun scripts/build-binary.ts
+
+      - name: Verify binary output
+        shell: bash
+        run: |
+          ls -la packages/coding-agent/dist/
+          test -f "packages/coding-agent/dist/${{ matrix.binary_name }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary_name }}
+          path: packages/coding-agent/dist/${{ matrix.binary_name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine release tag
+        id: release_info
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            PKG_VER=$(node -p "require('./packages/coding-agent/package.json').version")
+            TAG="v${PKG_VER}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+          merge-multiple: true
+
+      - name: Generate Checksums & Display Assets
+        working-directory: binaries
+        shell: bash
+        run: |
+          ls -la
+          sha256sum omp-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: Release ${{ steps.release_info.outputs.tag }}
+          files: |
+            binaries/omp-linux-x64
+            binaries/omp-linux-arm64
+            binaries/omp-darwin-x64
+            binaries/omp-darwin-arm64
+            binaries/SHA256SUMS.txt
+          draft: false
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
