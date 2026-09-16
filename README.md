@@ -33,6 +33,30 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 > vouch system may return.
 
 ## Install
+### Teamwork Preview Edition (`inut-team/omp-teamwork-agy`)
+
+Quick one-line installer for **Teamwork Preview Edition** with 7 bundled agent archetypes and multi-agent coordination:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/inut-team/omp-teamwork-agy/feature/teamwork-agy/scripts/install.sh | bash
+```
+
+Or install from source via bun:
+```sh
+curl -fsSL https://raw.githubusercontent.com/inut-team/omp-teamwork-agy/feature/teamwork-agy/scripts/install.sh | bash -s -- --source --ref feature/teamwork-agy
+```
+
+#### Teamwork Agent Archetypes & Commands
+- **Slash Commands:** `/teamwork-preview` and `/teamwork`
+- **7 Bundled Agent Archetypes:**
+  - `teamwork-orchestrator`: Lead orchestrator coordinating milestones, cohorts, and verification
+  - `teamwork-explorer`: Reconnaissance specialist surveying codebase, architectures, and configs
+  - `teamwork-worker`: Implementation worker editing code, building features, and running tests
+  - `teamwork-reviewer`: Code quality and specification compliance reviewer
+  - `teamwork-challenger`: Adversarial stress-tester for edge cases, boundaries, and race conditions
+  - `teamwork-auditor`: Non-skippable forensic auditor enforcing zero-fake mocks and test execution
+  - `teamwork-victory-auditor`: Final gatekeeper certifying acceptance criteria before completion
+
 
 **macOS · Linux**
 
