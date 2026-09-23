@@ -2,6 +2,9 @@ name: Release Binaries
 
 on:
   push:
+    branches:
+      - feature/teamwork-agy
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -58,7 +61,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p packages/natives/native
-          tarball="$(npm view @oh-my-pi/pi-natives-${{ matrix.cross_target }}@latest dist.tarball 2>/dev/null || true)"
+          NATIVES_VER=$(node -p "require('./packages/natives/package.json').version")
+          tarball="$(npm view @oh-my-pi/pi-natives-${{ matrix.cross_target }}@${NATIVES_VER} dist.tarball 2>/dev/null || npm view @oh-my-pi/pi-natives-${{ matrix.cross_target }}@latest dist.tarball 2>/dev/null || true)"
           if [ -n "$tarball" ]; then
             echo "Fetching native addon: $tarball"
             curl -fsSL "$tarball" | tar -xz -C packages/natives/native --strip-components=1
@@ -89,6 +93,7 @@ jobs:
     name: Publish GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     steps:
