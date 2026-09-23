@@ -38,7 +38,7 @@ jobs:
             cross_target: linux-arm64
             binary_name: omp-linux-arm64
           - target: darwin-x64
-            os: macos-13
+            os: macos-14
             cross_target: darwin-x64
             binary_name: omp-darwin-x64
           - target: darwin-arm64
