@@ -194,16 +194,27 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	) {
 		return agents.find(a => a.name === "teamwork-orchestrator");
 	}
+	if (
+		normalized === "teamwork-swe-light" ||
+		normalized === "teamwork-preview-swe" ||
+		normalized === "teamwork-preview-swe-light" ||
+		normalized === "teamwork-swe" ||
+		normalized === "swe-light" ||
+		normalized === "swe"
+	) {
+		return agents.find(a => a.name === "teamwork-swe-light");
+	}
 	if (normalized === "teamwork-preview-explorer" || normalized === "explorer") {
 		return agents.find(a => a.name === "teamwork-explorer");
 	}
 	if (
-		normalized === "teamwork-preview-worker" ||
-		normalized === "teamwork-preview-implementer" ||
 		normalized === "teamwork-implementer" ||
-		normalized === "worker" ||
+		normalized === "teamwork-preview-implementer" ||
 		normalized === "implementer"
 	) {
+		return agents.find(a => a.name === "teamwork-implementer");
+	}
+	if (normalized === "teamwork-preview-worker" || normalized === "teamwork-worker" || normalized === "worker") {
 		return agents.find(a => a.name === "teamwork-worker");
 	}
 	if (normalized === "teamwork-preview-reviewer") {
@@ -211,6 +222,31 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	}
 	if (normalized === "teamwork-preview-challenger" || normalized === "challenger") {
 		return agents.find(a => a.name === "teamwork-challenger");
+	}
+	if (
+		normalized === "teamwork-dependency-auditor" ||
+		normalized === "teamwork-preview-dependency" ||
+		normalized === "teamwork-preview-dependency-auditor" ||
+		normalized === "dependency-auditor" ||
+		normalized === "dependency"
+	) {
+		return agents.find(a => a.name === "teamwork-dependency-auditor");
+	}
+	if (
+		normalized === "teamwork-document-reviewer" ||
+		normalized === "teamwork-preview-document" ||
+		normalized === "teamwork-preview-document-reviewer" ||
+		normalized === "document-reviewer" ||
+		normalized === "document"
+	) {
+		return agents.find(a => a.name === "teamwork-document-reviewer");
+	}
+	if (
+		normalized === "teamwork-document-victory-auditor" ||
+		normalized === "teamwork-preview-document-victory-auditor" ||
+		normalized === "document-victory-auditor"
+	) {
+		return agents.find(a => a.name === "teamwork-document-victory-auditor");
 	}
 	if (
 		normalized === "teamwork-preview-auditor" ||

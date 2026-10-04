@@ -19,6 +19,11 @@ import teamworkOrchestratorMd from "../prompts/agents/teamwork-orchestrator.md" 
 import teamworkReviewerMd from "../prompts/agents/teamwork-reviewer.md" with { type: "text" };
 import teamworkVictoryAuditorMd from "../prompts/agents/teamwork-victory-auditor.md" with { type: "text" };
 import teamworkWorkerMd from "../prompts/agents/teamwork-worker.md" with { type: "text" };
+import teamworkDependencyAuditorMd from "../prompts/agents/teamwork-dependency-auditor.md" with { type: "text" };
+import teamworkDocumentReviewerMd from "../prompts/agents/teamwork-document-reviewer.md" with { type: "text" };
+import teamworkDocumentVictoryAuditorMd from "../prompts/agents/teamwork-document-victory-auditor.md" with { type: "text" };
+import teamworkImplementerMd from "../prompts/agents/teamwork-implementer.md" with { type: "text" };
+import teamworkSweLightMd from "../prompts/agents/teamwork-swe-light.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -84,6 +89,11 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-challenger.md", template: teamworkChallengerMd },
 	{ fileName: "teamwork-auditor.md", template: teamworkAuditorMd },
 	{ fileName: "teamwork-victory-auditor.md", template: teamworkVictoryAuditorMd },
+	{ fileName: "teamwork-swe-light.md", template: teamworkSweLightMd },
+	{ fileName: "teamwork-implementer.md", template: teamworkImplementerMd },
+	{ fileName: "teamwork-dependency-auditor.md", template: teamworkDependencyAuditorMd },
+	{ fileName: "teamwork-document-reviewer.md", template: teamworkDocumentReviewerMd },
+	{ fileName: "teamwork-document-victory-auditor.md", template: teamworkDocumentVictoryAuditorMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.

@@ -48,15 +48,20 @@ curl -fsSL https://raw.githubusercontent.com/inut-team/omp-teamwork-agy/feature/
 
 #### Teamwork Agent Archetypes & Commands
 - **Slash Commands:** `/teamwork-preview` and `/teamwork`
-- **7 Bundled Agent Archetypes:**
+- **Routing Decision Table:** Auto-routes to **SWE Light** (fast, single change), **Document Review** (papers/RFCs), or **General SWE** (full 5-phase cohort with Dual-Track test execution).
+- **12 Bundled Agent Archetypes:**
   - `teamwork-orchestrator`: Lead orchestrator coordinating milestones, cohorts, and verification
+  - `teamwork-swe-light`: Fast dispatch-only orchestrator for single-change tasks with collapsed team
+  - `teamwork-implementer`: Pragmatic worker for focused SWE tasks without over-engineering
   - `teamwork-explorer`: Reconnaissance specialist surveying codebase, architectures, and configs
   - `teamwork-worker`: Implementation worker editing code, building features, and running tests
   - `teamwork-reviewer`: Code quality and specification compliance reviewer
   - `teamwork-challenger`: Adversarial stress-tester for edge cases, boundaries, and race conditions
+  - `teamwork-dependency-auditor`: Pre-flight environment auditor checking tools, compilers, and dependencies
+  - `teamwork-document-reviewer`: Deep reviewer for manuscripts, design docs, specifications, and RFCs
+  - `teamwork-document-victory-auditor`: Forensic auditor specifically verifying document review evidence and citations
   - `teamwork-auditor`: Non-skippable forensic auditor enforcing zero-fake mocks and test execution
   - `teamwork-victory-auditor`: Final gatekeeper certifying acceptance criteria before completion
-
 
 **macOS · Linux**
 
