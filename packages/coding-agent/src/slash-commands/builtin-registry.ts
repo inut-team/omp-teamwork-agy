@@ -3,6 +3,7 @@ import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import { BUILTIN_AGY_COMPAT_SLASH_COMMANDS } from "./builtin-agy-compat";
+import { BUILTIN_CLAUDE_COMPAT_SLASH_COMMANDS } from "./builtin-claude-compat";
 import {
 	buildArgumentCompletions,
 	buildDirectoryArgumentCompletions,
@@ -49,6 +50,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	...BUILTIN_SKILLS_SLASH_COMMANDS,
 	...BUILTIN_CONTROL_SLASH_COMMANDS,
 	...BUILTIN_AGY_COMPAT_SLASH_COMMANDS,
+	...BUILTIN_CLAUDE_COMPAT_SLASH_COMMANDS,
 ];
 
 const BUILTIN_SLASH_COMMAND_LOOKUP = new Map<string, SlashCommandSpec>();

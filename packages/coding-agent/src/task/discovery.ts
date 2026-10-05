@@ -263,5 +263,17 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	) {
 		return agents.find(a => a.name === "teamwork-victory-auditor");
 	}
+	if (normalized === "ship-audit" || normalized === "claude-ship-audit" || normalized === "ship") {
+		return agents.find(a => a.name === "ship-audit");
+	}
+	if (normalized === "code-reviewer") {
+		return agents.find(a => a.name === "teamwork-reviewer");
+	}
+	if (normalized === "general-purpose") {
+		return agents.find(a => a.name === "task");
+	}
+	if (normalized === "software-architect") {
+		return agents.find(a => a.name === "teamwork-orchestrator");
+	}
 	return undefined;
 }
