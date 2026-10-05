@@ -1,4 +1,5 @@
 import type { SlashCommandSpec } from "./types";
+import { formatTeamworkStatus, inspectTeamworkStatus } from "../task/teamwork-status";
 
 export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
@@ -26,12 +27,37 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 		description: "Start the teamwork preview workflow (agy compat)",
 		inlineHint: "[optional context]",
 		allowArgs: true,
-		handle: async (command, _runtime) => {
+		subcommands: [
+			{ name: "status", description: "Inspect teamwork project status, gates, and milestones" },
+			{ name: "report", description: "Display full teamwork project status report" },
+		],
+		handle: async (command, runtime) => {
+			const trimmed = command.args ? command.args.trim() : "";
+			if (/^(status|report)(\s.*)?$/i.test(trimmed)) {
+				const cwd = runtime?.cwd ?? process.cwd();
+				const status = await inspectTeamworkStatus(cwd);
+				const formatted = formatTeamworkStatus(status);
+				if (runtime && typeof runtime.output === "function") {
+					await runtime.output(formatted);
+				}
+				return { prompt: formatted };
+			}
 			const base = `<TEAMWORK>\nThe user invoked /teamwork-preview to run an autonomous multi-agent teamwork project (agy compatibility & enhanced execution).\nYou are the **Teamwork Sentinel (Project Director)**.\n\n## Autonomous Execution Directive\n1. **Zero Questionnaire Traps**:\n   - DO NOT trap the user in an interactive 9-step survey or ask unnecessary questions.\n   - If a request/task is provided with the command:\n     - Rapidly ground yourself: perform 1-2 quick reads/globs if needed to inspect relevant project files or endpoints.\n     - Scaffold the coordination files:\n       - \`.agents/ORIGINAL_REQUEST.md\`: Record the formal request verbatim under a timestamped header.\n       - \`.agents/<agent_name>/BRIEFING.md\`: Record situational awareness with append-only \`## 🔒 My Identity\` and \`## 🔒 Key Constraints\` sections.\n     - Evaluate the task against the **Routing Decision Table** and immediately dispatch the chosen path.\n   - If invoked without arguments: ask the user in 1 concise sentence what project or task to execute.\n\n## Task Routing Decision Table\nEvaluate every request and route to the optimal execution path:\n| Path | Agent | Rationale & Signals |\n|---|---|---|\n| **SWE Light** | \`teamwork-swe-light\` | Single self-contained code change (bug fix, small feature, local refactor) OR user explicitly requested speed/smallness ("nhanh", "gọn", "cheap", "simple"). Runs collapsed team: 1 implementer + reviewer loop. |\n| **Document Review** | \`teamwork-document-reviewer\` | A document, manuscript, paper, specification, or RFC is supplied to be reviewed/critiqued. Dispatches specialized document review & \`teamwork-document-victory-auditor\`. |\n| **General SWE** | \`teamwork-orchestrator\` | Multi-component software engineering, large refactoring, full stack, or new systems. Runs full 5-phase cohort with Dual-Track test execution. |\n\n## Pre-Flight Dependency Audit\nFor complex tasks or unfamiliar codebases, dispatch \`teamwork-dependency-auditor\` first to verify tools, compilers, and dependencies.\n- **READY**: Proceed with the chosen execution path.\n- **MISSING**: Report missing tools and the exact install commands to the user; do not guess or silently install without permission.\n- **OUTAGE**: Report service/network outage and stop.\n\n## Verification & Victory Audit\n- An independent audit is MANDATORY before reporting completion.\n- Document Review path -> dispatch \`teamwork-document-victory-auditor\`.\n- Other paths -> dispatch \`teamwork-victory-auditor\`.\n- Binary Veto: On VICTORY REJECTED, route the audit report back to the team. NEVER declare completion without VICTORY CONFIRMED.\n</TEAMWORK>`;
 			const prompt = command.args ? `${base}\n\n${command.args.trim()}` : base;
 			return { prompt };
 		},
 		handleTui: async (command, runtime) => {
+			const trimmed = command.args ? command.args.trim() : "";
+			if (/^(status|report)(\s.*)?$/i.test(trimmed)) {
+				runtime.ctx.editor.setText("");
+				const cwd = runtime.ctx.sessionManager?.getCwd?.() ?? process.cwd();
+				const status = await inspectTeamworkStatus(cwd);
+				const formatted = formatTeamworkStatus(status);
+				if (runtime.ctx && typeof runtime.ctx.showStatus === "function") {
+					runtime.ctx.showStatus(formatted);
+				}
+				return { consumed: true };
+			}
 			runtime.ctx.editor.setText("");
 			const base = `<TEAMWORK>\nThe user invoked /teamwork-preview to run an autonomous multi-agent teamwork project (agy compatibility & enhanced execution).\nYou are the **Teamwork Sentinel (Project Director)**.\n\n## Autonomous Execution Directive\n1. **Zero Questionnaire Traps**:\n   - DO NOT trap the user in an interactive 9-step survey or ask unnecessary questions.\n   - If a request/task is provided with the command:\n     - Rapidly ground yourself: perform 1-2 quick reads/globs if needed to inspect relevant project files or endpoints.\n     - Scaffold the coordination files:\n       - \`.agents/ORIGINAL_REQUEST.md\`: Record the formal request verbatim under a timestamped header.\n       - \`.agents/<agent_name>/BRIEFING.md\`: Record situational awareness with append-only \`## 🔒 My Identity\` and \`## 🔒 Key Constraints\` sections.\n     - Evaluate the task against the **Routing Decision Table** and immediately dispatch the chosen path.\n   - If invoked without arguments: ask the user in 1 concise sentence what project or task to execute.\n\n## Task Routing Decision Table\nEvaluate every request and route to the optimal execution path:\n| Path | Agent | Rationale & Signals |\n|---|---|---|\n| **SWE Light** | \`teamwork-swe-light\` | Single self-contained code change (bug fix, small feature, local refactor) OR user explicitly requested speed/smallness ("nhanh", "gọn", "cheap", "simple"). Runs collapsed team: 1 implementer + reviewer loop. |\n| **Document Review** | \`teamwork-document-reviewer\` | A document, manuscript, paper, specification, or RFC is supplied to be reviewed/critiqued. Dispatches specialized document review & \`teamwork-document-victory-auditor\`. |\n| **General SWE** | \`teamwork-orchestrator\` | Multi-component software engineering, large refactoring, full stack, or new systems. Runs full 5-phase cohort with Dual-Track test execution. |\n\n## Pre-Flight Dependency Audit\nFor complex tasks or unfamiliar codebases, dispatch \`teamwork-dependency-auditor\` first to verify tools, compilers, and dependencies.\n- **READY**: Proceed with the chosen execution path.\n- **MISSING**: Report missing tools and the exact install commands to the user; do not guess or silently install without permission.\n- **OUTAGE**: Report service/network outage and stop.\n\n## Verification & Victory Audit\n- An independent audit is MANDATORY before reporting completion.\n- Document Review path -> dispatch \`teamwork-document-victory-auditor\`.\n- Other paths -> dispatch \`teamwork-victory-auditor\`.\n- Binary Veto: On VICTORY REJECTED, route the audit report back to the team. NEVER declare completion without VICTORY CONFIRMED.\n</TEAMWORK>`;
 			const prompt = command.args ? `${base}\n\n${command.args.trim()}` : base;

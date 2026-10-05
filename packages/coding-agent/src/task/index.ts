@@ -143,6 +143,7 @@ export {
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	taskSchema,
 } from "./types";
+export * from "./teamwork-status";
 
 interface TaskDescriptionOptions {
 	agents: AgentDefinition[];
