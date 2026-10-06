@@ -144,6 +144,7 @@ export {
 	taskSchema,
 } from "./types";
 export * from "./teamwork-status";
+export * from "./teamwork-fork";
 
 interface TaskDescriptionOptions {
 	agents: AgentDefinition[];

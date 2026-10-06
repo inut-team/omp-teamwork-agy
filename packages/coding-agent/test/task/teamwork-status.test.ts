@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { BUILTIN_AGY_COMPAT_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-agy-compat";
 import type { SlashCommandRuntime, TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-import { formatTeamworkStatus, inspectTeamworkStatus } from "@oh-my-pi/pi-coding-agent/task/teamwork-status";
+import {
+	AGENT_ORDER,
+	formatTeamworkStatus,
+	inspectTeamworkStatus,
+	type TeamworkPerformanceMetrics,
+} from "@oh-my-pi/pi-coding-agent/task/teamwork-status";
 
 describe("Teamwork Status Inspector & Dashboard", () => {
 	let tempDir: string;
@@ -474,5 +479,206 @@ The teamwork orchestration agents have been forensically verified.
 				expect(status.milestones.length).toBeGreaterThanOrEqual(0);
 			}
 		}
+	});
+
+	it("sorts TeamworkFork and TeamworkForkPreview directly after TeamworkVictoryAuditor in AGENT_ORDER", async () => {
+		const victoryIdx = AGENT_ORDER.indexOf("TeamworkVictoryAuditor");
+		expect(victoryIdx).toBeGreaterThanOrEqual(0);
+		expect(AGENT_ORDER[victoryIdx + 1]).toBe("TeamworkFork");
+		expect(AGENT_ORDER[victoryIdx + 2]).toBe("TeamworkForkPreview");
+
+		const agentDir = path.join(tempDir, ".agents");
+		const testAgents = [
+			"CustomAgent",
+			"TeamworkForkPreview",
+			"TeamworkFork",
+			"TeamworkVictoryAuditor",
+			"TeamworkAuditor",
+			"TeamworkChallenger",
+			"TeamworkReviewer",
+			"TeamworkWorker",
+			"TeamworkExplorer",
+			"TeamworkOrchestrator",
+		];
+
+		for (const name of testAgents) {
+			const dir = path.join(agentDir, name);
+			await fs.mkdir(dir, { recursive: true });
+			await fs.writeFile(path.join(dir, "handoff.md"), `# ${name}\nDone.`, "utf-8");
+		}
+
+		const status = await inspectTeamworkStatus(tempDir);
+		const sortedNames = status.agents.map(a => a.name);
+		expect(sortedNames).toEqual([
+			"TeamworkOrchestrator",
+			"TeamworkExplorer",
+			"TeamworkWorker",
+			"TeamworkReviewer",
+			"TeamworkChallenger",
+			"TeamworkAuditor",
+			"TeamworkVictoryAuditor",
+			"TeamworkFork",
+			"TeamworkForkPreview",
+			"CustomAgent",
+		]);
+	});
+
+	it("extracts and aggregates performance metrics from subagent handoff files", async () => {
+		const agentDir = path.join(tempDir, ".agents");
+		const workerDir = path.join(agentDir, "TeamworkWorker");
+		const reviewerDir = path.join(agentDir, "TeamworkReviewer");
+		const forkDir = path.join(agentDir, "TeamworkFork");
+
+		await fs.mkdir(workerDir, { recursive: true });
+		await fs.mkdir(reviewerDir, { recursive: true });
+		await fs.mkdir(forkDir, { recursive: true });
+
+		await fs.writeFile(
+			path.join(workerDir, "handoff.md"),
+			`# TeamworkWorker Handoff
+## Performance & Tokens
+- Total Tokens: 12,000
+- Input Tokens: 10,000
+- Output Tokens: 2,000
+- Cache Read Tokens: 1,500
+- Total Cost: $0.05
+- Duration: 15s
+`,
+			"utf-8",
+		);
+
+		await fs.writeFile(
+			path.join(reviewerDir, "handoff.md"),
+			`# TeamworkReviewer Handoff
+## Token Usage & Performance
+- Total Tokens: 6,000
+- Input Tokens: 5,000
+- Output Tokens: 1,000
+- Cache Read Tokens: 500
+- Total Cost: $0.02
+- Duration: 5000ms
+`,
+			"utf-8",
+		);
+
+		await fs.writeFile(
+			path.join(forkDir, "handoff.md"),
+			`# TeamworkFork Handoff
+## Execution Metrics
+- Input Tokens: 3,000
+- Output Tokens: 500
+- Cache Read Tokens: 200
+- Total Cost: $0.015
+- Duration: 2.5s
+`,
+			"utf-8",
+		);
+
+		const status = await inspectTeamworkStatus(tempDir);
+		expect(status.metrics).toBeDefined();
+		expect(status.metrics?.inputTokens).toBe(18000);
+		expect(status.metrics?.outputTokens).toBe(3500);
+		expect(status.metrics?.cacheReadTokens).toBe(2200);
+		expect(status.metrics?.totalTokens).toBe(21700);
+		expect(status.metrics?.totalCost).toBeCloseTo(0.085, 4);
+		expect(status.metrics?.durationMs).toBe(22500);
+
+		const formatted = formatTeamworkStatus(status);
+		expect(formatted).toContain("PERFORMANCE & TOKEN METRICS");
+		expect(formatted).toContain("Total Tokens:       21,700");
+		expect(formatted).toContain("Input Tokens:       18,000");
+		expect(formatted).toContain("Output Tokens:      3,500");
+		expect(formatted).toContain("Cache Read Tokens:  2,200");
+		expect(formatted).toContain("Total Cost:         $0.085");
+		expect(formatted).toContain("Duration:           22.5s (22500ms)");
+	});
+
+	it("extracts performance metrics from coordination files with markdown tables", async () => {
+		const agentDir = path.join(tempDir, ".agents");
+		await fs.mkdir(agentDir, { recursive: true });
+
+		const progressContent = `# Progress Tracker
+## Token & Performance Metrics
+| Agent | Input Tokens | Output Tokens | Cache Read | Total Tokens | Cost | Duration |
+|---|---|---|---|---|---|---|
+| TeamworkWorker | 8,000 | 2,000 | 1,000 | 10,000 | $0.04 | 12s |
+| TeamworkFork | 4,000 | 1,000 | 500 | 5,000 | $0.02 | 8s |
+| Total | 12,000 | 3,000 | 1,500 | 15,000 | $0.06 | 20s |
+`;
+		await fs.writeFile(path.join(agentDir, "progress.md"), progressContent, "utf-8");
+
+		const status = await inspectTeamworkStatus(tempDir);
+		expect(status.metrics).toBeDefined();
+		expect(status.metrics?.totalTokens).toBe(15000);
+		expect(status.metrics?.inputTokens).toBe(12000);
+		expect(status.metrics?.outputTokens).toBe(3000);
+		expect(status.metrics?.cacheReadTokens).toBe(1500);
+		expect(status.metrics?.totalCost).toBeCloseTo(0.06, 4);
+		expect(status.metrics?.durationMs).toBe(20000);
+
+		const formatted = formatTeamworkStatus(status);
+		expect(formatted).toContain("PERFORMANCE & TOKEN METRICS");
+		expect(formatted).toContain("Total Tokens:       15,000");
+		expect(formatted).toContain("Total Cost:         $0.06");
+		expect(formatted).toContain("Duration:           20s (20000ms)");
+	});
+
+	it("extracts performance metrics from 2-column tables and inline formats", async () => {
+		const agentDir = path.join(tempDir, ".agents");
+		await fs.mkdir(agentDir, { recursive: true });
+
+		const progressContent = `# Living Tracker
+## Summary Metrics
+| Metric | Value |
+|---|---|
+| Total Tokens | 25,000 |
+| Input Tokens | 20,000 |
+| Output Tokens | 5,000 |
+| Cache Read Tokens | 3,000 |
+| Total Cost | $0.125 |
+| Duration | 1m 30s |
+`;
+		await fs.writeFile(path.join(agentDir, "progress.md"), progressContent, "utf-8");
+
+		const status = await inspectTeamworkStatus(tempDir);
+		expect(status.metrics).toBeDefined();
+		expect(status.metrics?.totalTokens).toBe(25000);
+		expect(status.metrics?.inputTokens).toBe(20000);
+		expect(status.metrics?.outputTokens).toBe(5000);
+		expect(status.metrics?.cacheReadTokens).toBe(3000);
+		expect(status.metrics?.totalCost).toBeCloseTo(0.125, 4);
+		expect(status.metrics?.durationMs).toBe(90000);
+
+		const formatted = formatTeamworkStatus(status);
+		expect(formatted).toContain("PERFORMANCE & TOKEN METRICS");
+		expect(formatted).toContain("1m 30s (90000ms)");
+	});
+
+	it("handles zero metrics cleanly and omits section when metrics is undefined", async () => {
+		const statusWithZero: TeamworkPerformanceMetrics = {
+			totalTokens: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			totalCost: 0,
+			durationMs: 0,
+		};
+
+		const agentDir = path.join(tempDir, ".agents");
+		await fs.mkdir(agentDir, { recursive: true });
+		const status = await inspectTeamworkStatus(tempDir);
+
+		// By default with empty folder, metrics is undefined
+		expect(status.metrics).toBeUndefined();
+		const formattedWithout = formatTeamworkStatus(status);
+		expect(formattedWithout).not.toContain("PERFORMANCE & TOKEN METRICS");
+
+		// Explicitly attaching zero metrics
+		const statusWithZeroMetrics = { ...status, metrics: statusWithZero };
+		const formattedWith = formatTeamworkStatus(statusWithZeroMetrics);
+		expect(formattedWith).toContain("PERFORMANCE & TOKEN METRICS");
+		expect(formattedWith).toContain("Total Tokens:       0");
+		expect(formattedWith).toContain("Total Cost:         $0.00");
+		expect(formattedWith).toContain("Duration:           0s (0ms)");
 	});
 });

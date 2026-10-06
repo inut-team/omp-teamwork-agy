@@ -60,6 +60,15 @@ export interface TeamworkOriginalRequestInfo {
 	raw?: string;
 }
 
+export interface TeamworkPerformanceMetrics {
+	totalTokens: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	totalCost: number;
+	durationMs: number;
+}
+
 export interface TeamworkProjectStatus {
 	exists: boolean;
 	agentDir: string;
@@ -69,6 +78,491 @@ export interface TeamworkProjectStatus {
 	gateStatus: TeamworkGateInfo;
 	victoryStatus: TeamworkVictoryInfo;
 	agents: TeamworkAgentSummary[];
+	metrics?: TeamworkPerformanceMetrics;
+}
+
+export const AGENT_ORDER: ReadonlyArray<string> = [
+	"TeamworkOrchestrator",
+	"TeamworkExplorer",
+	"TeamworkWorker",
+	"TeamworkReviewer",
+	"TeamworkChallenger",
+	"TeamworkAuditor",
+	"TeamworkVictoryAuditor",
+	"TeamworkFork",
+	"TeamworkForkPreview",
+];
+
+function getAgentOrderIndex(name: string): number {
+	const exact = AGENT_ORDER.indexOf(name);
+	if (exact !== -1) return exact;
+	const base = name.replace(/[-_]\d+$/, "");
+	const baseIdx = AGENT_ORDER.indexOf(base);
+	if (baseIdx !== -1) return baseIdx + 0.1;
+	return -1;
+}
+
+function parseDurationMs(raw: string): number {
+	const text = raw.trim();
+	const minSecMatch = text.match(
+		/^(?:(\d+(?:\.\d+)?)\s*h(?:ours?)?)?\s*(?:(\d+(?:\.\d+)?)\s*m(?:in(?:utes?)?)?)?\s*(?:(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?)?$/i,
+	);
+	if (minSecMatch && (minSecMatch[1] || minSecMatch[2] || minSecMatch[3])) {
+		const hours = minSecMatch[1] ? Number.parseFloat(minSecMatch[1]) : 0;
+		const minutes = minSecMatch[2] ? Number.parseFloat(minSecMatch[2]) : 0;
+		const seconds = minSecMatch[3] ? Number.parseFloat(minSecMatch[3]) : 0;
+		return Math.round((hours * 3600 + minutes * 60 + seconds) * 1000);
+	}
+	const msMatch = text.match(/^(\d+(?:\.\d+)?)\s*ms$/i);
+	if (msMatch) {
+		return Math.round(Number.parseFloat(msMatch[1].replace(/[,_]/g, "")));
+	}
+	const secMatch = text.match(/^(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?$/i);
+	if (secMatch) {
+		return Math.round(Number.parseFloat(secMatch[1].replace(/[,_]/g, "")) * 1000);
+	}
+	const clockMatch = text.match(/^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/);
+	if (clockMatch) {
+		const hours = clockMatch[1] ? Number.parseInt(clockMatch[1], 10) : 0;
+		const minutes = Number.parseInt(clockMatch[2], 10);
+		const seconds = Number.parseFloat(clockMatch[3]);
+		return Math.round((hours * 3600 + minutes * 60 + seconds) * 1000);
+	}
+	const cleanNum = text.replace(/[,_]/g, "");
+	const num = Number.parseFloat(cleanNum);
+	if (Number.isFinite(num)) {
+		return Math.round(num);
+	}
+	return 0;
+}
+
+function parseCost(raw: string): number {
+	const cleaned = raw.replace(/[$,\s]|usd/gi, "");
+	const num = Number.parseFloat(cleaned);
+	return Number.isFinite(num) ? num : 0;
+}
+
+function parseTokenCount(raw: string): number {
+	const cleaned = raw.replace(/[,_\s]/g, "");
+	const kMatch = cleaned.match(/^(\d+(?:\.\d+)?)[kK]$/);
+	if (kMatch) {
+		return Math.round(Number.parseFloat(kMatch[1]) * 1000);
+	}
+	const mMatch = cleaned.match(/^(\d+(?:\.\d+)?)[mM]$/);
+	if (mMatch) {
+		return Math.round(Number.parseFloat(mMatch[1]) * 1_000_000);
+	}
+	const num = Number.parseFloat(cleaned);
+	return Number.isFinite(num) ? Math.round(num) : 0;
+}
+
+function classifyMetricKey(
+	rawKey: string,
+): "totalTokens" | "inputTokens" | "outputTokens" | "cacheReadTokens" | "totalCost" | "durationMs" | null {
+	const k = rawKey.trim().toLowerCase().replace(/[-_]/g, " ");
+	if (k.includes("cache read") || k.includes("cached token") || k === "cachereadtokens" || k === "prompt cache read") {
+		return "cacheReadTokens";
+	}
+	if (
+		k.includes("input token") ||
+		k.includes("prompt token") ||
+		k === "inputtokens" ||
+		k === "prompttokens" ||
+		k === "input" ||
+		k === "prompt"
+	) {
+		return "inputTokens";
+	}
+	if (
+		k.includes("output token") ||
+		k.includes("completion token") ||
+		k === "outputtokens" ||
+		k === "completiontokens" ||
+		k === "output" ||
+		k === "completion"
+	) {
+		return "outputTokens";
+	}
+	if (
+		k.includes("total token") ||
+		k === "totaltokens" ||
+		k === "tokens total" ||
+		k === "tokens" ||
+		k === "token count"
+	) {
+		return "totalTokens";
+	}
+	if (k.includes("cost") || k === "totalcost" || k === "estimated cost" || k === "total cost") {
+		return "totalCost";
+	}
+	if (
+		k.includes("duration") ||
+		k.includes("execution time") ||
+		k.includes("elapsed time") ||
+		k === "elapsed" ||
+		k === "durationms" ||
+		k === "time"
+	) {
+		return "durationMs";
+	}
+	return null;
+}
+
+interface ParsedMetricsEntry {
+	totalTokens?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	cacheReadTokens?: number;
+	totalCost?: number;
+	durationMs?: number;
+	detected: boolean;
+}
+
+function parseMetricsFromContent(content: string): TeamworkPerformanceMetrics[] {
+	const results: TeamworkPerformanceMetrics[] = [];
+
+	// 1. JSON Code blocks
+	const jsonMatches = content.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/g);
+	for (const match of jsonMatches) {
+		try {
+			const parsed: unknown = JSON.parse(match[1]);
+			if (typeof parsed === "object" && parsed !== null) {
+				const obj = parsed as Record<string, unknown>;
+				const usage =
+					typeof obj.usage === "object" && obj.usage !== null ? (obj.usage as Record<string, unknown>) : obj;
+				let found = false;
+				let inTokens = 0;
+				let outTokens = 0;
+				let cacheTokens = 0;
+				let totTokens = 0;
+				let cost = 0;
+				let dur = 0;
+
+				for (const [key, val] of Object.entries(usage)) {
+					const classified = classifyMetricKey(key);
+					if (classified) {
+						found = true;
+						const strVal = String(val);
+						if (classified === "inputTokens") inTokens = parseTokenCount(strVal);
+						else if (classified === "outputTokens") outTokens = parseTokenCount(strVal);
+						else if (classified === "cacheReadTokens") cacheTokens = parseTokenCount(strVal);
+						else if (classified === "totalTokens") totTokens = parseTokenCount(strVal);
+						else if (classified === "totalCost") cost = parseCost(strVal);
+						else if (classified === "durationMs") dur = parseDurationMs(strVal);
+					}
+				}
+				if (usage !== obj) {
+					if (obj.cost !== undefined || obj.totalCost !== undefined) {
+						cost = parseCost(String(obj.totalCost ?? obj.cost));
+						found = true;
+					}
+					if (obj.duration !== undefined || obj.durationMs !== undefined || obj.executionTime !== undefined) {
+						dur = parseDurationMs(String(obj.durationMs ?? obj.duration ?? obj.executionTime));
+						found = true;
+					}
+				}
+
+				if (found) {
+					if (totTokens === 0 && (inTokens > 0 || outTokens > 0 || cacheTokens > 0)) {
+						totTokens = inTokens + outTokens + cacheTokens;
+					}
+					results.push({
+						totalTokens: totTokens,
+						inputTokens: inTokens,
+						outputTokens: outTokens,
+						cacheReadTokens: cacheTokens,
+						totalCost: cost,
+						durationMs: dur,
+					});
+				}
+			}
+		} catch {
+			// ignore non-json
+		}
+	}
+
+	// 2. Markdown Tables
+	const lines = content.split("\n");
+	let inMultiColumnTable = false;
+	let colMap: {
+		agent?: number;
+		input?: number;
+		output?: number;
+		cache?: number;
+		total?: number;
+		cost?: number;
+		duration?: number;
+	} | null = null;
+	const tableRows: TeamworkPerformanceMetrics[] = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].trim();
+		if (!line.startsWith("|") || !line.endsWith("|")) {
+			inMultiColumnTable = false;
+			colMap = null;
+			continue;
+		}
+
+		const cells = line
+			.slice(1, -1)
+			.split(/(?<!\\)\|/)
+			.map(c => c.replace(/\\\|/g, "|").trim());
+
+		const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : "";
+		const nextIsSeparator =
+			nextLine.startsWith("|") &&
+			nextLine.endsWith("|") &&
+			nextLine
+				.slice(1, -1)
+				.split(/(?<!\\)\|/)
+				.every(c => /^[-:\s]+$/.test(c.trim()));
+
+		const hasMetricHeader =
+			nextIsSeparator &&
+			cells.some(c => {
+				const clean = cleanMarkdown(c).toLowerCase();
+				return (
+					clean.includes("token") ||
+					clean.includes("cost") ||
+					clean.includes("duration") ||
+					clean.includes("execution time")
+				);
+			});
+		if (hasMetricHeader && cells.length >= 2) {
+			const cleanedCells = cells.map(c => cleanMarkdown(c).toLowerCase());
+			const inIdx = cleanedCells.findIndex(c => c.includes("input") || c.includes("prompt"));
+			const outIdx = cleanedCells.findIndex(c => c.includes("output") || c.includes("completion"));
+			const cacheIdx = cleanedCells.findIndex(c => c.includes("cache"));
+			const totIdx = cleanedCells.findIndex(c => c.includes("total token") || c === "tokens" || c === "total");
+			const costIdx = cleanedCells.findIndex(c => c.includes("cost"));
+			const durIdx = cleanedCells.findIndex(
+				c => c.includes("duration") || c.includes("time") || c.includes("elapsed"),
+			);
+			const agentIdx = cleanedCells.findIndex(
+				c => c.includes("agent") || c.includes("role") || c.includes("worker") || c.includes("cohort"),
+			);
+
+			if (inIdx !== -1 || outIdx !== -1 || totIdx !== -1 || costIdx !== -1 || durIdx !== -1) {
+				inMultiColumnTable = true;
+				colMap = {
+					agent: agentIdx !== -1 ? agentIdx : undefined,
+					input: inIdx !== -1 ? inIdx : undefined,
+					output: outIdx !== -1 ? outIdx : undefined,
+					cache: cacheIdx !== -1 ? cacheIdx : undefined,
+					total: totIdx !== -1 ? totIdx : undefined,
+					cost: costIdx !== -1 ? costIdx : undefined,
+					duration: durIdx !== -1 ? durIdx : undefined,
+				};
+				continue;
+			}
+		}
+
+		if (inMultiColumnTable && colMap) {
+			if (cells.every(c => /^[-:\s]+$/.test(c))) {
+				continue;
+			}
+
+			const firstCell = cleanMarkdown(cells[0]).toLowerCase();
+			const isTotalRow =
+				firstCell === "total" || firstCell === "sum" || firstCell === "summary" || firstCell === "all";
+			if (isTotalRow && tableRows.length > 0) {
+				continue;
+			}
+
+			let inTokens = 0;
+			let outTokens = 0;
+			let cacheTokens = 0;
+			let totTokens = 0;
+			let cost = 0;
+			let dur = 0;
+			let hasAny = false;
+
+			if (colMap.input !== undefined && colMap.input < cells.length) {
+				inTokens = parseTokenCount(cleanMarkdown(cells[colMap.input]));
+				hasAny = true;
+			}
+			if (colMap.output !== undefined && colMap.output < cells.length) {
+				outTokens = parseTokenCount(cleanMarkdown(cells[colMap.output]));
+				hasAny = true;
+			}
+			if (colMap.cache !== undefined && colMap.cache < cells.length) {
+				cacheTokens = parseTokenCount(cleanMarkdown(cells[colMap.cache]));
+				hasAny = true;
+			}
+			if (colMap.total !== undefined && colMap.total < cells.length) {
+				totTokens = parseTokenCount(cleanMarkdown(cells[colMap.total]));
+				hasAny = true;
+			}
+			if (colMap.cost !== undefined && colMap.cost < cells.length) {
+				cost = parseCost(cleanMarkdown(cells[colMap.cost]));
+				hasAny = true;
+			}
+			if (colMap.duration !== undefined && colMap.duration < cells.length) {
+				dur = parseDurationMs(cleanMarkdown(cells[colMap.duration]));
+				hasAny = true;
+			}
+
+			if (hasAny) {
+				if (totTokens === 0 && (inTokens > 0 || outTokens > 0 || cacheTokens > 0)) {
+					totTokens = inTokens + outTokens + cacheTokens;
+				}
+				tableRows.push({
+					totalTokens: totTokens,
+					inputTokens: inTokens,
+					outputTokens: outTokens,
+					cacheReadTokens: cacheTokens,
+					totalCost: cost,
+					durationMs: dur,
+				});
+			}
+		}
+	}
+
+	if (tableRows.length > 0) {
+		results.push(...tableRows);
+		return results;
+	}
+
+	// 3. Bullet points, Key-Value Lines, and 2-Column Metric-Value Tables
+	const nonCodeText = content.replace(/```[\s\S]*?```/g, "");
+	const textLines = nonCodeText.split("\n");
+
+	let current: ParsedMetricsEntry = { detected: false };
+
+	const pushCurrent = () => {
+		if (
+			current.detected ||
+			(current.totalTokens ?? 0) > 0 ||
+			(current.inputTokens ?? 0) > 0 ||
+			(current.outputTokens ?? 0) > 0 ||
+			(current.cacheReadTokens ?? 0) > 0 ||
+			(current.totalCost ?? 0) > 0 ||
+			(current.durationMs ?? 0) > 0
+		) {
+			let tot = current.totalTokens ?? 0;
+			const inp = current.inputTokens ?? 0;
+			const out = current.outputTokens ?? 0;
+			const cache = current.cacheReadTokens ?? 0;
+			if (tot === 0 && (inp > 0 || out > 0 || cache > 0)) {
+				tot = inp + out + cache;
+			}
+			results.push({
+				totalTokens: tot,
+				inputTokens: inp,
+				outputTokens: out,
+				cacheReadTokens: cache,
+				totalCost: current.totalCost ?? 0,
+				durationMs: current.durationMs ?? 0,
+			});
+			current = { detected: false };
+		}
+	};
+
+	for (const line of textLines) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+
+		if (/^#{1,6}\s+/.test(trimmed)) {
+			pushCurrent();
+			continue;
+		}
+
+		if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+			const cells = trimmed
+				.slice(1, -1)
+				.split(/(?<!\\)\|/)
+				.map(c => c.replace(/\\\|/g, "|").trim());
+
+			if (cells.length === 2 && !cells.every(c => /^[-:\s]+$/.test(c))) {
+				const rawKey = cleanMarkdown(cells[0]);
+				const rawVal = cleanMarkdown(cells[1]);
+				const classified = classifyMetricKey(rawKey);
+				if (classified) {
+					if (current[classified] !== undefined) {
+						pushCurrent();
+					}
+					current.detected = true;
+					if (classified === "inputTokens") current.inputTokens = parseTokenCount(rawVal);
+					else if (classified === "outputTokens") current.outputTokens = parseTokenCount(rawVal);
+					else if (classified === "cacheReadTokens") current.cacheReadTokens = parseTokenCount(rawVal);
+					else if (classified === "totalTokens") current.totalTokens = parseTokenCount(rawVal);
+					else if (classified === "totalCost") current.totalCost = parseCost(rawVal);
+					else if (classified === "durationMs") current.durationMs = parseDurationMs(rawVal);
+					continue;
+				}
+			}
+		}
+
+		const kvMatch = trimmed.match(
+			/^(?:[-*+]\s+|\d+\.\s+)?(?:[*_`#\s]*)([^:\n\r=_]+?)(?:[*_`\s]*)\s*[:=]\s*[*_`\s]*([^\n\r`*]+?)(?:[*_`\s]*)$/,
+		);
+		if (kvMatch) {
+			const rawKey = cleanMarkdown(kvMatch[1]);
+			const rawVal = cleanMarkdown(kvMatch[2]);
+			const classified = classifyMetricKey(rawKey);
+			if (classified) {
+				if (current[classified] !== undefined) {
+					pushCurrent();
+				}
+				current.detected = true;
+				if (classified === "inputTokens") current.inputTokens = parseTokenCount(rawVal);
+				else if (classified === "outputTokens") current.outputTokens = parseTokenCount(rawVal);
+				else if (classified === "cacheReadTokens") current.cacheReadTokens = parseTokenCount(rawVal);
+				else if (classified === "totalTokens") current.totalTokens = parseTokenCount(rawVal);
+				else if (classified === "totalCost") current.totalCost = parseCost(rawVal);
+				else if (classified === "durationMs") current.durationMs = parseDurationMs(rawVal);
+				continue;
+			}
+		}
+
+		const inlineIn =
+			trimmed.match(/([0-9.,_]+[kKmM]?)\s*(?:input|prompt)\s*tokens?/i) ??
+			trimmed.match(/(?:input|prompt)\s*tokens?\s*[:=]\s*([0-9.,_]+[kKmM]?)/i);
+		const inlineOut =
+			trimmed.match(/([0-9.,_]+[kKmM]?)\s*(?:output|completion)\s*tokens?/i) ??
+			trimmed.match(/(?:output|completion)\s*tokens?\s*[:=]\s*([0-9.,_]+[kKmM]?)/i);
+		const inlineCache =
+			trimmed.match(/([0-9.,_]+[kKmM]?)\s*(?:cache\s*read|cached)\s*tokens?/i) ??
+			trimmed.match(/(?:cache\s*read|cached)\s*tokens?\s*[:=]\s*([0-9.,_]+[kKmM]?)/i);
+		const inlineTot =
+			trimmed.match(/([0-9.,_]+[kKmM]?)\s*total\s*tokens?/i) ??
+			trimmed.match(/(?:total\s*tokens?|totalTokens)\s*[:=]\s*([0-9.,_]+[kKmM]?)/i);
+
+		if (inlineIn || inlineOut || inlineCache || inlineTot) {
+			current.detected = true;
+			if (inlineIn) current.inputTokens = parseTokenCount(inlineIn[1]);
+			if (inlineOut) current.outputTokens = parseTokenCount(inlineOut[1]);
+			if (inlineCache) current.cacheReadTokens = parseTokenCount(inlineCache[1]);
+			if (inlineTot) current.totalTokens = parseTokenCount(inlineTot[1]);
+		}
+	}
+
+	pushCurrent();
+	return results;
+}
+
+function formatCost(cost: number): string {
+	if (cost === 0) return "$0.00";
+	if (cost < 0.01) {
+		return `$${cost.toFixed(4)}`;
+	}
+	const formatted = cost.toFixed(4);
+	const trimmed = formatted.replace(/(\.\d{2}[1-9]?)0+$/, "$1").replace(/(\.\d{2})0+$/, "$1");
+	return `$${trimmed}`;
+}
+
+function formatDuration(ms: number): string {
+	if (ms <= 0) return "0s (0ms)";
+	if (ms < 1000) return `${ms}ms`;
+	const totalSec = ms / 1000;
+	if (totalSec < 60) {
+		const s = totalSec % 1 === 0 ? totalSec.toFixed(0) : totalSec.toFixed(2).replace(/\.?0+$/, "");
+		return `${s}s (${ms}ms)`;
+	}
+	const minutes = Math.floor(totalSec / 60);
+	const seconds = totalSec % 60;
+	const s = seconds % 1 === 0 ? seconds.toFixed(0) : seconds.toFixed(1).replace(/\.?0+$/, "");
+	return `${minutes}m ${s}s (${ms}ms)`;
 }
 
 async function readFileSafe(filePath: string): Promise<string | undefined> {
@@ -538,23 +1032,131 @@ export async function inspectTeamworkStatus(cwd: string = process.cwd()): Promis
 		}
 	}
 
-	const AGENT_ORDER = [
-		"TeamworkOrchestrator",
-		"TeamworkExplorer",
-		"TeamworkWorker",
-		"TeamworkReviewer",
-		"TeamworkChallenger",
-		"TeamworkAuditor",
-		"TeamworkVictoryAuditor",
-	];
 	agents.sort((a, b) => {
-		const aIdx = AGENT_ORDER.indexOf(a.name);
-		const bIdx = AGENT_ORDER.indexOf(b.name);
+		const aIdx = getAgentOrderIndex(a.name);
+		const bIdx = getAgentOrderIndex(b.name);
 		if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
 		if (aIdx !== -1) return -1;
 		if (bIdx !== -1) return 1;
 		return a.name.localeCompare(b.name);
 	});
+
+	// 6. Token & Performance Metrics
+	const subagentMetrics = new Map<string, TeamworkPerformanceMetrics>();
+	let metricsDetected = false;
+
+	for (const agent of agents) {
+		const candidateFiles: string[] = [];
+		if (agent.handoffPath) {
+			candidateFiles.push(agent.handoffPath);
+		}
+		for (const f of agent.files) {
+			if (f.endsWith(".md") && f !== "handoff.md") {
+				candidateFiles.push(path.join(agentDir, agent.name, f));
+			}
+		}
+
+		for (const filePath of candidateFiles) {
+			const text = await readFileSafe(filePath);
+			if (!text) continue;
+			const parsed = parseMetricsFromContent(text);
+			if (parsed.length > 0) {
+				metricsDetected = true;
+				const existing = subagentMetrics.get(agent.name) ?? {
+					totalTokens: 0,
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					totalCost: 0,
+					durationMs: 0,
+				};
+				for (const item of parsed) {
+					existing.totalTokens += item.totalTokens;
+					existing.inputTokens += item.inputTokens;
+					existing.outputTokens += item.outputTokens;
+					existing.cacheReadTokens += item.cacheReadTokens;
+					existing.totalCost += item.totalCost;
+					existing.durationMs += item.durationMs;
+				}
+				subagentMetrics.set(agent.name, existing);
+				break;
+			}
+		}
+	}
+
+	const coordinationFiles: string[] = [
+		path.join(agentDir, "handoff.md"),
+		path.join(agentDir, "progress.md"),
+		path.join(agentDir, "TeamworkOrchestrator", "progress.md"),
+		path.join(agentDir, "plan.md"),
+		path.join(agentDir, "TeamworkOrchestrator", "plan.md"),
+		path.join(agentDir, "GATE_STATUS.md"),
+		path.join(agentDir, "TeamworkOrchestrator", "GATE_STATUS.md"),
+		path.join(agentDir, "victory_report.md"),
+		path.join(agentDir, "audit_report.md"),
+		path.join(agentDir, "token_usage.md"),
+		path.join(agentDir, "metrics.md"),
+		path.join(agentDir, "performance.md"),
+	];
+
+	const coordinationMetrics: TeamworkPerformanceMetrics[] = [];
+	const seenCoordination = new Set<string>();
+
+	for (const candidate of coordinationFiles) {
+		if (seenCoordination.has(candidate)) continue;
+		seenCoordination.add(candidate);
+
+		const text = await readFileSafe(candidate);
+		if (!text) continue;
+
+		const parsed = parseMetricsFromContent(text);
+		if (parsed.length > 0) {
+			metricsDetected = true;
+			if (subagentMetrics.size === 0) {
+				coordinationMetrics.push(...parsed);
+			}
+		}
+	}
+
+	let totalTokens = 0;
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let cacheReadTokens = 0;
+	let totalCost = 0;
+	let durationMs = 0;
+
+	for (const m of subagentMetrics.values()) {
+		totalTokens += m.totalTokens;
+		inputTokens += m.inputTokens;
+		outputTokens += m.outputTokens;
+		cacheReadTokens += m.cacheReadTokens;
+		totalCost += m.totalCost;
+		durationMs += m.durationMs;
+	}
+	for (const m of coordinationMetrics) {
+		totalTokens += m.totalTokens;
+		inputTokens += m.inputTokens;
+		outputTokens += m.outputTokens;
+		cacheReadTokens += m.cacheReadTokens;
+		totalCost += m.totalCost;
+		durationMs += m.durationMs;
+	}
+
+	if (totalTokens === 0 && (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0)) {
+		totalTokens = inputTokens + outputTokens + cacheReadTokens;
+	}
+
+	let metrics: TeamworkPerformanceMetrics | undefined;
+	if (metricsDetected || totalTokens > 0 || totalCost > 0 || durationMs > 0) {
+		metrics = {
+			totalTokens,
+			inputTokens,
+			outputTokens,
+			cacheReadTokens,
+			totalCost: Number.parseFloat(totalCost.toFixed(6)),
+			durationMs,
+		};
+	}
 
 	const overallStatus = deriveOverallStatus(
 		victoryStatus,
@@ -573,6 +1175,7 @@ export async function inspectTeamworkStatus(cwd: string = process.cwd()): Promis
 		gateStatus,
 		victoryStatus,
 		agents,
+		metrics,
 	};
 }
 
@@ -603,8 +1206,8 @@ export function formatTeamworkStatus(status: TeamworkProjectStatus): string {
 		status.milestones.length === 0 &&
 		!status.gateStatus.exists &&
 		!status.victoryStatus.exists &&
-		status.agents.length === 0;
-
+		status.agents.length === 0 &&
+		!status.metrics;
 	if (isEmptyProject) {
 		lines.push("");
 		lines.push("Teamwork directory exists, but no coordination files have been generated yet.");
@@ -710,6 +1313,18 @@ export function formatTeamworkStatus(status: TeamworkProjectStatus): string {
 		}
 	} else {
 		lines.push("No subagent cohorts recorded.");
+	}
+
+	// 6. Performance & Token Metrics
+	if (status.metrics) {
+		lines.push("");
+		lines.push(subHr("PERFORMANCE & TOKEN METRICS"));
+		lines.push(`Total Tokens:       ${status.metrics.totalTokens.toLocaleString("en-US")}`);
+		lines.push(`Input Tokens:       ${status.metrics.inputTokens.toLocaleString("en-US")}`);
+		lines.push(`Output Tokens:      ${status.metrics.outputTokens.toLocaleString("en-US")}`);
+		lines.push(`Cache Read Tokens:  ${status.metrics.cacheReadTokens.toLocaleString("en-US")}`);
+		lines.push(`Total Cost:         ${formatCost(status.metrics.totalCost)}`);
+		lines.push(`Duration:           ${formatDuration(status.metrics.durationMs)}`);
 	}
 
 	lines.push(hr);

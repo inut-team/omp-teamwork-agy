@@ -1024,10 +1024,11 @@ export function followMCPTools(mcpManager: MCPManager, reservedNames?: ReadonlyS
 		scheduled = true;
 		queueMicrotask(flush);
 	};
-	const unsubscribe = mcpManager.addToolsChangedListener(() => {
-		pending = true;
-		if (session) schedule();
-	});
+	const unsubscribe =
+		mcpManager.addToolsChangedListener?.(() => {
+			pending = true;
+			if (session) schedule();
+		}) ?? (() => {});
 	return {
 		bind(next) {
 			session = next;

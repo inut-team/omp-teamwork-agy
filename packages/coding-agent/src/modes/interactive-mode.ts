@@ -147,6 +147,7 @@ import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
+import { runTeamworkForkPreviewTui, runTeamworkForkTui } from "../task/teamwork-fork";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { isMCPToolName } from "../tools/builtin-names";
@@ -8225,6 +8226,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController.showToolError(toolName, error);
 	}
 
+	handleTeamworkForkCommand(work: string): Promise<void> {
+		return runTeamworkForkTui(this, work);
+	}
+	handleTeamworkForkPreviewCommand(work: string): Promise<void> {
+		return runTeamworkForkPreviewTui(this, work);
+	}
 	#subscribeToAgent(): void {
 		this.#eventController.subscribeToAgent();
 	}

@@ -263,6 +263,25 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	) {
 		return agents.find(a => a.name === "teamwork-victory-auditor");
 	}
+	if (
+		normalized === "teamwork-fork-preview" ||
+		normalized === "teamwork-preview-fork-preview" ||
+		normalized === "teamwork_fork_preview" ||
+		normalized === "teamwork_preview_fork_preview" ||
+		normalized === "tw-fork-preview" ||
+		normalized === "fork-preview"
+	) {
+		return agents.find(a => a.name === "teamwork-fork-preview");
+	}
+	if (
+		normalized === "teamwork-fork" ||
+		normalized === "teamwork-preview-fork" ||
+		normalized === "teamwork_preview_fork" ||
+		normalized === "tw-fork" ||
+		normalized === "fork"
+	) {
+		return agents.find(a => a.name === "teamwork-fork");
+	}
 	if (normalized === "ship-audit" || normalized === "claude-ship-audit" || normalized === "ship") {
 		return agents.find(a => a.name === "ship-audit");
 	}

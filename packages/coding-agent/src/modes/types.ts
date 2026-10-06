@@ -448,6 +448,8 @@ export interface InteractiveModeContext {
 	handleResetContextCommand(): Promise<void>;
 	handleDeleteCommand(): Promise<void>;
 	handleForkCommand(): Promise<void>;
+	handleTeamworkForkCommand(work: string): Promise<void>;
+	handleTeamworkForkPreviewCommand(work: string): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;

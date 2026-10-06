@@ -25,6 +25,8 @@ import teamworkDocumentVictoryAuditorMd from "../prompts/agents/teamwork-documen
 import teamworkImplementerMd from "../prompts/agents/teamwork-implementer.md" with { type: "text" };
 import teamworkSweLightMd from "../prompts/agents/teamwork-swe-light.md" with { type: "text" };
 import shipAuditMd from "../prompts/agents/ship-audit.md" with { type: "text" };
+import teamworkForkMd from "../prompts/agents/teamwork-fork.md" with { type: "text" };
+import teamworkForkPreviewMd from "../prompts/agents/teamwork-fork-preview.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -96,6 +98,8 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-document-reviewer.md", template: teamworkDocumentReviewerMd },
 	{ fileName: "teamwork-document-victory-auditor.md", template: teamworkDocumentVictoryAuditorMd },
 	{ fileName: "ship-audit.md", template: shipAuditMd },
+	{ fileName: "teamwork-fork.md", template: teamworkForkMd },
+	{ fileName: "teamwork-fork-preview.md", template: teamworkForkPreviewMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.

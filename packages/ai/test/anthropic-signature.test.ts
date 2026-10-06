@@ -49,9 +49,9 @@ describe("servedModelFromAnthropicSignature", () => {
 			[
 				"-e",
 				`import { servedModelFromAnthropicSignature } from ${JSON.stringify(module)};
-console.log(servedModelFromAnthropicSignature(${JSON.stringify(signature)}));`,
+console.log(String(servedModelFromAnthropicSignature(${JSON.stringify(signature)})));`,
 			],
-			{ encoding: "utf8", timeout: 2_000 },
+			{ encoding: "utf8", timeout: 2_000, env: { ...process.env, NO_COLOR: "1" } },
 		);
 		expect(result.error).toBeUndefined();
 		expect(result.stdout).toBe("undefined\n");
