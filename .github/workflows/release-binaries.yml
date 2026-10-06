@@ -66,6 +66,9 @@ jobs:
           if [ -n "$tarball" ]; then
             echo "Fetching native addon: $tarball"
             curl -fsSL "$tarball" | tar -xz -C packages/natives/native --strip-components=1
+            for f in packages/natives/native/*.node; do
+              [ -f "$f" ] && bun scripts/stamp-native-version.ts "$f" || true
+            done
             ls -la packages/natives/native/
           fi
 
