@@ -138,4 +138,32 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 			throw new Error("Expected prompt result");
 		}
 	});
+
+	it("provides /boost and /boots slash command with Boost Lead Orchestrator prompt", async () => {
+		const cmd = BUILTIN_AGY_COMPAT_SLASH_COMMANDS.find(c => c.name === "boost");
+		expect(cmd).toBeDefined();
+		expect(cmd?.aliases).toContain("boots");
+
+		if (!cmd || !cmd.handle) {
+			throw new Error("boost command or handle not found");
+		}
+		const result = await cmd.handle(
+			{ name: "boost", args: "tối ưu hóa pipeline video", text: "boost tối ưu hóa pipeline video" },
+			{} as unknown as SlashCommandRuntime,
+		);
+		expect(result).toBeDefined();
+		if (result && "prompt" in result) {
+			expect(result.prompt).toContain("<BOOST>");
+			expect(result.prompt).toContain("Boost Lead Orchestrator");
+			expect(result.prompt).toContain("Zero Questionnaire Traps");
+			expect(result.prompt).toContain("Decompose & Parallel Dispatch");
+			expect(result.prompt).toContain("tối ưu hóa pipeline video");
+		} else {
+			throw new Error("Expected prompt result");
+		}
+
+		const agents = loadBundledAgents();
+		expect(getAgent(agents, "boost")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "boots")?.name).toBe("teamwork-orchestrator");
+	});
 });

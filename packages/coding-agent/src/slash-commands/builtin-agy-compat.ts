@@ -178,4 +178,23 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 			return { prompt: buildTeamworkForkPreviewPrompt(work, model?.name ?? model?.id) };
 		},
 	},
+	{
+		name: "boost",
+		aliases: ["boots"],
+		icon: "rocket",
+		description: "Invoke the Boost multi-agent orchestrator for complex tasks (agy compat)",
+		inlineHint: "<task description>",
+		allowArgs: true,
+		handle: async (command, _runtime) => {
+			const base = `<BOOST>\nThe user invoked /boost to run the Boost multi-agent orchestrator (agy compatibility & high-throughput autonomous execution).\nYou are the **Boost Lead Orchestrator**.\n\n## Autonomous Execution Directive\n1. **Zero Questionnaire Traps**:\n   - DO NOT trap the user in an interactive survey, questionnaire, or clarification questions. Work autonomously.\n2. **Decompose & Parallel Dispatch**:\n   - Rapidly ground yourself: inspect relevant files and state.\n   - Decompose the request into 2+ distinct subtasks and immediately dispatch parallel subagents via \`task\`.\n   - Coordinate specialized roles: exploration/investigation, implementation, adversarial verification, or test suites.\n3. **Evidence-First Verification**:\n   - Enforce real test execution and evidence validation (zero mock, zero hallucination).\n4. **Final Synthesis**:\n   - Consolidate all worker findings into a clean, concise result with exact files and verified execution proof.\n</BOOST>`;
+			const prompt = command.args ? `${base}\n\n${command.args.trim()}` : base;
+			return { prompt };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const base = `<BOOST>\nThe user invoked /boost to run the Boost multi-agent orchestrator (agy compatibility & high-throughput autonomous execution).\nYou are the **Boost Lead Orchestrator**.\n\n## Autonomous Execution Directive\n1. **Zero Questionnaire Traps**:\n   - DO NOT trap the user in an interactive survey, questionnaire, or clarification questions. Work autonomously.\n2. **Decompose & Parallel Dispatch**:\n   - Rapidly ground yourself: inspect relevant files and state.\n   - Decompose the request into 2+ distinct subtasks and immediately dispatch parallel subagents via \`task\`.\n   - Coordinate specialized roles: exploration/investigation, implementation, adversarial verification, or test suites.\n3. **Evidence-First Verification**:\n   - Enforce real test execution and evidence validation (zero mock, zero hallucination).\n4. **Final Synthesis**:\n   - Consolidate all worker findings into a clean, concise result with exact files and verified execution proof.\n</BOOST>`;
+			const prompt = command.args ? `${base}\n\n${command.args.trim()}` : base;
+			return { prompt };
+		},
+	},
 ];

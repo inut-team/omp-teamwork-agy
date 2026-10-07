@@ -190,7 +190,10 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 		normalized === "teamwork" ||
 		normalized === "teamwork-preview" ||
 		normalized === "teamwork-preview-orchestrator" ||
-		normalized === "orchestrator"
+		normalized === "orchestrator" ||
+		normalized === "boost" ||
+		normalized === "boots" ||
+		normalized === "boost-orchestrator"
 	) {
 		return agents.find(a => a.name === "teamwork-orchestrator");
 	}
