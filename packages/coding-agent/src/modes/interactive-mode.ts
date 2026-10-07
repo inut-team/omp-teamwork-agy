@@ -21,6 +21,7 @@ import type {
 	AutocompleteProvider,
 	Component,
 	EditorTheme,
+	KeyId,
 	LoaderMessageColorFn,
 	OverlayHandle,
 	SlashCommand,
@@ -326,7 +327,6 @@ import { UiHelpers } from "./utils/ui-helpers";
 import {
 	cfgAutocompleteMaxVisible,
 	cfgComposerShape,
-	cfgComposerThinkingInModel,
 	cfgComposerTokenRate,
 	cfgDisplayCacheMissMarker,
 	cfgDisplayCollapseCompacted,
@@ -406,7 +406,6 @@ const cfgLiveUiSettings = combine({
 	"spelling.autocomplete": cfgSpellingAutocomplete,
 	"spelling.autocorrect": cfgSpellingAutocorrect,
 	"composer.shape": cfgComposerShape,
-	"composer.thinkingInModel": cfgComposerThinkingInModel,
 	"tui.vimMode": cfgTuiVimMode,
 	"tui.vimModeDisplay": cfgTuiVimModeDisplay,
 	"display.pinnedAgents": cfgDisplayPinnedAgents,
@@ -1333,7 +1332,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return rate === null ? undefined : Math.round(rate * 10) / 10;
 	}
 	/** The key that interrupts (the working row's stop control), or undefined when Esc would not cancel. */
-	maintenanceInterruptKey(): string | undefined {
+	maintenanceInterruptKey(): KeyId | undefined {
 		if (this.focusedAgentId) return undefined;
 		return this.keybindings.getKeys("app.interrupt")[0] ?? "escape";
 	}
@@ -3411,8 +3410,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.updateEditorBorderColor();
 		}
 		if (any("composer.shape")) this.syncComposerShape();
-		// The native composer re-reads the setting as it describes.
-		if (any("composer.thinkingInModel")) this.ui.requestRender();
 		if (any("tui.vimMode", "tui.vimModeDisplay")) this.#applyVimModeSetting();
 		if (any("display.pinnedAgents")) this.applyPinnedAgentsSetting();
 		if (any("display.subagentLivePreview")) {
@@ -3723,7 +3720,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					? { kind: "python", excluded: draft.startsWith("$$") }
 					: undefined,
 			thinking: thinkingLevelWord(this.viewSession),
-			thinkingInModel: cfgComposerThinkingInModel.get(settings),
+			thinkingInModel: cfgStatusLineCompactThinkingLevel.get(settings),
 			rate: this.#nativeTokenRate(),
 			running: this.loadingAnimation !== undefined || this.session.isStreaming,
 			viewing: this.#viewingLineage(),

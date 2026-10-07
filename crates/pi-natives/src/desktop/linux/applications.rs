@@ -539,7 +539,7 @@ fn processes() -> HashMap<PathBuf, Vec<u32>> {
 	processes
 }
 
-#[allow(clippy::unnecessary_wraps, reason = "cross-platform platform::list signature consistency")]
+#[allow(clippy::unnecessary_wraps, reason = "matches the fallible macOS and Windows signatures")]
 pub(super) fn list() -> CoreResult<Vec<Application>> {
 	let processes = processes();
 	let bus = BusConnection::session().ok();

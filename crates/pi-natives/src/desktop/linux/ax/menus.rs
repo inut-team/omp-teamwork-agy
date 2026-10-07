@@ -30,7 +30,7 @@ mod tests {
 
 	#[test]
 	fn non_menu_controls_are_not_commands() {
-		assert!(!menu_role(Role::PushButton));
+		assert!(!menu_role(Role::Button));
 		assert!(!menu_role(Role::Frame));
 		assert!(!menu_role(Role::MenuBar));
 		assert!(menu_role(Role::CheckMenuItem));
