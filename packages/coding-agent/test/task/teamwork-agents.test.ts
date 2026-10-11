@@ -5,7 +5,7 @@ import { BUILTIN_AGY_COMPAT_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/sla
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 
 describe("Teamwork Agents & Slash Command Integration", () => {
-	it("bundles all 12 teamwork agent definitions", () => {
+	it("bundles all 14 teamwork agent definitions (including DeepCoder & DeepInvestigator)", () => {
 		const agents = loadBundledAgents();
 		const agentNames = agents.map(a => a.name);
 
@@ -24,6 +24,10 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(agentNames).toContain("teamwork-dependency-auditor");
 		expect(agentNames).toContain("teamwork-document-reviewer");
 		expect(agentNames).toContain("teamwork-document-victory-auditor");
+
+		// DeepMind Parity Agents
+		expect(agentNames).toContain("teamwork-deepcoder");
+		expect(agentNames).toContain("teamwork-deepinvestigator");
 	});
 
 	it("resolves teamwork agent aliases correctly", () => {
@@ -98,6 +102,12 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "teamwork-victory-auditor")?.name).toBe("teamwork-victory-auditor");
 		expect(getAgent(agents, "teamwork_preview_victory_auditor")?.name).toBe("teamwork-victory-auditor");
 		expect(getAgent(agents, "victory-auditor")?.name).toBe("teamwork-victory-auditor");
+
+		// DeepMind Parity aliases
+		expect(getAgent(agents, "deepcoder")?.name).toBe("teamwork-deepcoder");
+		expect(getAgent(agents, "deep-coder")?.name).toBe("teamwork-deepcoder");
+		expect(getAgent(agents, "deepinvestigator")?.name).toBe("teamwork-deepinvestigator");
+		expect(getAgent(agents, "deep-investigator")?.name).toBe("teamwork-deepinvestigator");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -156,7 +166,8 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 			expect(result.prompt).toContain("<BOOST>");
 			expect(result.prompt).toContain("Boost Lead Orchestrator");
 			expect(result.prompt).toContain("Zero Questionnaire Traps");
-			expect(result.prompt).toContain("Decompose & Parallel Dispatch");
+			expect(result.prompt).toContain("Decompose & Parallel Dispatch (DeepCoder & DeepInvestigator Engine)");
+			expect(result.prompt).toContain("generative-ui");
 			expect(result.prompt).toContain("tối ưu hóa pipeline video");
 		} else {
 			throw new Error("Expected prompt result");

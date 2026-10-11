@@ -297,5 +297,22 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	if (normalized === "software-architect") {
 		return agents.find(a => a.name === "teamwork-orchestrator");
 	}
+	if (
+		normalized === "teamwork-deepcoder" ||
+		normalized === "deepcoder" ||
+		normalized === "deep-coder" ||
+		normalized === "deepcoder-l0" ||
+		normalized === "deepcoder-worker"
+	) {
+		return agents.find(a => a.name === "teamwork-deepcoder");
+	}
+	if (
+		normalized === "teamwork-deepinvestigator" ||
+		normalized === "deepinvestigator" ||
+		normalized === "deep-investigator" ||
+		normalized === "investigator"
+	) {
+		return agents.find(a => a.name === "teamwork-deepinvestigator");
+	}
 	return undefined;
 }
