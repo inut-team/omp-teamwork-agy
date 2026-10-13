@@ -140,6 +140,8 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		if (result && "prompt" in result) {
 			expect(result.prompt).toContain("<TEAMWORK>");
 			expect(result.prompt).toContain("Zero Questionnaire Traps");
+			expect(result.prompt).toContain("Scope Interview (AGY Parity)");
+			expect(result.prompt).toContain(".agents/SCOPE.md");
 			expect(result.prompt).toContain("Routing Decision Table");
 			expect(result.prompt).toContain("SWE Light");
 			expect(result.prompt).toContain("Pre-Flight Dependency Audit");
