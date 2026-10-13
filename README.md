@@ -69,6 +69,8 @@ curl -fsSL https://raw.githubusercontent.com/inut-team/omp-teamwork-agy/feature/
 curl -fsSL https://omp.sh/install | sh
 ```
 
+Without a usable bun (or with `--binary`), the install scripts fetch the prebuilt binary from `build.stencil.so` and check its SHA-256 before installing it. Pin a release with `curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v<version>` (PowerShell: `-Binary -Ref v<version>`).
+
 > **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
 
 **Homebrew**
@@ -89,8 +91,8 @@ bun install -g @oh-my-pi/pi-coding-agent
 # Run without installing
 nix run github:can1357/oh-my-pi
 
-# Or install into the active profile
-nix profile install github:can1357/oh-my-pi
+# Or install into the active profile (Nix < 2.30: `nix profile install`)
+nix profile add github:can1357/oh-my-pi
 ```
 
 Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
@@ -410,7 +412,7 @@ modelRoles:
 
 ### Four knobs that make routing useful
 
-- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `bedrock-converse-stream`, `google-generative-ai`, `google-gemini-cli`, `google-vertex`, `typesafe`, or `openrouter-decisions` (the two judge APIs) in `~/.omp/agent/models.yml`.
+- **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `bedrock-converse-stream`, `google-generative-ai`, `google-gemini-cli`, `google-vertex`, `typesafe`, `openrouter-decisions`, `openai-decisions`, or `workers-ai-systemone` (the judge APIs) in `~/.omp/agent/models.yml`.
 - **Fallback chains** — Per-role or per-model chains under `retry.fallbackChains`. When the primary throws 429s or hits a quota wall, the next entry takes the rest of the turn — restored on cooldown.
 - **Path-scoped models** — Scope `enabledModels` and `disabledProviders` entries to a `path:` prefix to pin a different model set on one repo without touching the global config. Scoped entries cover the path and everything under it.
 - **Round-robin credentials** — Stack API keys per provider and the runtime rotates with session affinity and per-credential backoff. Useful when one key would burn its quota by lunch.
