@@ -36,6 +36,17 @@ collapse {
 	// `-low`/`-medium`/`-high` thinking-level SKUs plus a `-tiered` alias. One
 	// template per provider covers each revision discovery advertises; the
 	// minimal tier is served by the `-low` SKU (Gemini 3.7+ rejects MINIMAL).
+	variant-family "google-antigravity" "gemini-4-argon" name="Gemini 4 Argon" {
+		members "gemini-4-argon-low" "gemini-4-argon-medium" "gemini-4-argon-high"
+		default-member "gemini-4-argon-medium"
+		route "minimal" "gemini-4-argon-low"
+		route "low" "gemini-4-argon-low"
+		route "medium" "gemini-4-argon-medium"
+		route "high" "gemini-4-argon-high"
+		mode "google-level"
+		efforts "minimal" "low" "medium" "high"
+		requires-effort #true
+	}
 	variant-family "google-antigravity" "gemini-{rev}-flash" name="Gemini {rev} Flash" revision=">=3.6" {
 		members "gemini-{rev}-flash-low" "gemini-{rev}-flash-medium" "gemini-{rev}-flash-high" "gemini-{rev}-flash-tiered"
 		route "minimal" "gemini-{rev}-flash-low"
@@ -150,6 +161,17 @@ collapse {
 		mode "budget"
 		efforts "minimal" "low" "medium" "high"
 		preserve-absent-effort-routes #true
+	}
+	variant-family "google-gemini-cli" "gemini-4-argon" name="Gemini 4 Argon" {
+		members "gemini-4-argon-low" "gemini-4-argon-medium" "gemini-4-argon-high"
+		default-member "gemini-4-argon-medium"
+		route "minimal" "gemini-4-argon-low"
+		route "low" "gemini-4-argon-low"
+		route "medium" "gemini-4-argon-medium"
+		route "high" "gemini-4-argon-high"
+		mode "google-level"
+		efforts "minimal" "low" "medium" "high"
+		requires-effort #true
 	}
 	variant-family "google-gemini-cli" "gemini-{rev}-flash" name="Gemini {rev} Flash" revision=">=3.6" {
 		members "gemini-{rev}-flash-low" "gemini-{rev}-flash-medium" "gemini-{rev}-flash-high" "gemini-{rev}-flash-tiered"

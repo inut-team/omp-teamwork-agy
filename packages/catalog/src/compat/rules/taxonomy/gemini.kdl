@@ -4,6 +4,7 @@ class "gemini" {
 	family "lite" glob="*flash-lite*" priority=10
 	family "flash" glob="*flash*"
 	family "pro" glob="*pro*"
+	family "argon" glob="*argon*"
 
 	revision prefix="gemini-"
 }

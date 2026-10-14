@@ -21,6 +21,16 @@ provider "google-antigravity" {
 			limits
 			supports-tools #false
 		}
+		model "gemini-4-argon" name="Gemini 4 Argon" {
+			reasoning #true
+			input "text" "image"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits context=1048576 max-tokens=65536
+			request-model-id "gemini-4-argon-medium"
+			thinking-mode "google-level"
+			thinking-efforts "minimal" "low" "medium" "high"
+			thinking-requires-effort #true
+		}
 	}
 
 	// Routed wire profiles overwrite caller caps with fixed output limits.

@@ -26,6 +26,18 @@ class "gemini" {
 			thinking-efforts "minimal" "low" "medium" "high"
 		}
 	}
+	family "argon" {
+		revision ">=4" {
+			thinking-upgrade-neutral #true
+			supports-reasoning-effort #true
+			thinking-efforts "minimal" "low" "medium" "high"
+			input-modalities "text" "image"
+			limits-patch {
+				context-window 1048576
+				max-tokens 65536
+			}
+		}
+	}
 	// Direct Gemini 2.5 thinking budgets. Flash and Lite share the lower
 	// documented ceiling; Pro keeps the full 32k high tier.
 	on "google" "google-vertex" "opencode-zen" {

@@ -9,6 +9,7 @@ import { type ApiKey, withAuth } from "@oh-my-pi/pi-ai/auth-retry";
 import { getAppleFoundationModelsAvailability } from "@oh-my-pi/pi-ai/providers/apple-foundation-models";
 import type { Api, FetchImpl, Model, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
 import { buildDiscoveredModel, buildModel } from "@oh-my-pi/pi-catalog/build";
+import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import {
 	getBundledModelReferenceIndex,
 	inheritReferenceThinking,
@@ -992,14 +993,30 @@ export async function discoverOpenAIModelsList(
 				? resolveLiteLLMApi(undefined, id, providerConfig.api)
 				: providerConfig.api;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
-		specs.push({
+		const policy = resolveModelPolicy({
 			id,
 			name: reference?.name ?? id,
 			api,
 			provider: providerConfig.provider,
 			baseUrl,
 			reasoning: reference?.reasoning ?? false,
-			thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
+			input,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow,
+			maxTokens: Math.min(
+				reportedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
+				contextWindow,
+			),
+		});
+		const policyCompat = policy.compat as OpenAICompat | undefined;
+		specs.push({
+			id,
+			name: reference?.name ?? id,
+			api,
+			provider: providerConfig.provider,
+			baseUrl,
+			reasoning: reference?.reasoning ?? policy.thinking !== undefined,
+			thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider) ?? policy.thinking,
 			input,
 			...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 			// Proxy/gateway pricing is provider-specific and rarely matches
@@ -1018,7 +1035,9 @@ export async function discoverOpenAIModelsList(
 			compat: {
 				supportsStore: false,
 				supportsDeveloperRole: false,
-				supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? false,
+				supportsReasoningEffort:
+					referenceCompat?.supportsReasoningEffort ??
+					(policy.thinking !== undefined ? (policyCompat?.supportsReasoningEffort ?? true) : false),
 				...(referenceCompat?.reasoningEffortMap ? { reasoningEffortMap: referenceCompat.reasoningEffortMap } : {}),
 				...(referenceCompat?.omitReasoningEffort !== undefined
 					? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
