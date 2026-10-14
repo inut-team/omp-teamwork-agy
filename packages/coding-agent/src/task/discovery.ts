@@ -314,5 +314,21 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	) {
 		return agents.find(a => a.name === "teamwork-deepinvestigator");
 	}
+	if (
+		normalized === "teamwork-test-writer" ||
+		normalized === "teamwork-preview-test-writer" ||
+		normalized === "test-writer" ||
+		normalized === "e2e-test-writer"
+	) {
+		return agents.find(a => a.name === "teamwork-test-writer");
+	}
+	if (
+		normalized === "teamwork-spec-miner" ||
+		normalized === "teamwork-preview-spec-miner" ||
+		normalized === "spec-miner" ||
+		normalized === "specification-miner"
+	) {
+		return agents.find(a => a.name === "teamwork-spec-miner");
+	}
 	return undefined;
 }

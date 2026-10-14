@@ -1,9 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { loadBundledAgents } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { getAgent } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { BUILTIN_AGY_COMPAT_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-agy-compat";
+import {
+	buildTeamworkForkPreviewPrompt,
+	buildTeamworkForkPrompt,
+} from "@oh-my-pi/pi-coding-agent/task/teamwork-fork-model";
+import { formatTeamworkStatus, inspectTeamworkStatus } from "@oh-my-pi/pi-coding-agent/task/teamwork-status";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-
 describe("Teamwork Agents & Slash Command Integration", () => {
 	it("bundles all 14 teamwork agent definitions (including DeepCoder & DeepInvestigator)", () => {
 		const agents = loadBundledAgents();
@@ -25,9 +32,11 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(agentNames).toContain("teamwork-document-reviewer");
 		expect(agentNames).toContain("teamwork-document-victory-auditor");
 
-		// DeepMind Parity Agents
+		// DeepMind & Dual-Track Parity Agents
 		expect(agentNames).toContain("teamwork-deepcoder");
 		expect(agentNames).toContain("teamwork-deepinvestigator");
+		expect(agentNames).toContain("teamwork-test-writer");
+		expect(agentNames).toContain("teamwork-spec-miner");
 	});
 
 	it("resolves teamwork agent aliases correctly", () => {
@@ -108,6 +117,16 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "deep-coder")?.name).toBe("teamwork-deepcoder");
 		expect(getAgent(agents, "deepinvestigator")?.name).toBe("teamwork-deepinvestigator");
 		expect(getAgent(agents, "deep-investigator")?.name).toBe("teamwork-deepinvestigator");
+
+		// Test Writer & Spec Miner aliases (AGY Dual-Track & Phase 0 Survey parity)
+		expect(getAgent(agents, "teamwork-test-writer")?.name).toBe("teamwork-test-writer");
+		expect(getAgent(agents, "teamwork_preview_test_writer")?.name).toBe("teamwork-test-writer");
+		expect(getAgent(agents, "test-writer")?.name).toBe("teamwork-test-writer");
+		expect(getAgent(agents, "e2e-test-writer")?.name).toBe("teamwork-test-writer");
+		expect(getAgent(agents, "teamwork-spec-miner")?.name).toBe("teamwork-spec-miner");
+		expect(getAgent(agents, "teamwork_preview_spec_miner")?.name).toBe("teamwork-spec-miner");
+		expect(getAgent(agents, "spec-miner")?.name).toBe("teamwork-spec-miner");
+		expect(getAgent(agents, "specification-miner")?.name).toBe("teamwork-spec-miner");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -139,12 +158,13 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(result).toBeDefined();
 		if (result && "prompt" in result) {
 			expect(result.prompt).toContain("<TEAMWORK>");
-			expect(result.prompt).toContain("Zero Questionnaire Traps");
+			expect(result.prompt).toContain("DISPATCH-ONLY");
 			expect(result.prompt).toContain("Scope Interview (AGY Parity)");
 			expect(result.prompt).toContain(".agents/SCOPE.md");
 			expect(result.prompt).toContain("Routing Decision Table");
 			expect(result.prompt).toContain("SWE Light");
 			expect(result.prompt).toContain("Pre-Flight Dependency Audit");
+			expect(result.prompt).toContain("=== VICTORY AUDIT REPORT ===");
 			expect(result.prompt).toContain("xây dựng search engine");
 		} else {
 			throw new Error("Expected prompt result");
@@ -178,5 +198,168 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		const agents = loadBundledAgents();
 		expect(getAgent(agents, "boost")?.name).toBe("teamwork-orchestrator");
 		expect(getAgent(agents, "boots")?.name).toBe("teamwork-orchestrator");
+	});
+
+	it("Case 1: aligns /teamwork-fork and /teamwork-fork-preview Sentinel prompts with AGY dispatch-only & SCOPE.md contract", () => {
+		const forkPrompt = buildTeamworkForkPrompt("refactor payment gateway");
+		expect(forkPrompt).toContain("<TEAMWORK_FORK>");
+		expect(forkPrompt).toContain("DISPATCH-ONLY");
+		expect(forkPrompt).toContain(".agents/SCOPE.md");
+		expect(forkPrompt).toContain("refactor payment gateway");
+
+		const forkPreviewPrompt = buildTeamworkForkPreviewPrompt("audit auth module", "Gemini 4 Argon");
+		expect(forkPreviewPrompt).toContain("<TEAMWORK_FORK_PREVIEW>");
+		expect(forkPreviewPrompt).toContain("Gemini 4 Argon");
+		expect(forkPreviewPrompt).toContain("DISPATCH-ONLY");
+		expect(forkPreviewPrompt).toContain(".agents/SCOPE.md");
+		expect(forkPreviewPrompt).toContain("audit auth module");
+	});
+
+	it("Case 2 & 3: Forensic Auditor INTEGRITY VIOLATION and Reviewer REQUEST_CHANGES trigger gate rejection in inspectTeamworkStatus", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-tw-case2-"));
+		try {
+			const agentsDir = path.join(tmpDir, ".agents");
+			await fs.mkdir(path.join(agentsDir, "TeamworkAuditor"), { recursive: true });
+			await Bun.write(
+				path.join(agentsDir, "ORIGINAL_REQUEST.md"),
+				"# Original User Request\n\n## 2026-10-14T10:00:00Z\nBuild tax calculator from scratch.\n",
+			);
+			await Bun.write(
+				path.join(agentsDir, "TeamworkAuditor", "audit_report.md"),
+				"## Forensic Audit Report\n\n**Verdict**: INTEGRITY VIOLATION\n\n### Phase Results\n- Facade & Zero-Mock Check: FAIL — mocked calculateTax return value\n",
+			);
+
+			const status = await inspectTeamworkStatus(tmpDir);
+			expect(status.exists).toBe(true);
+			expect(status.gateStatus.verdict).toBe("REJECTED");
+			expect(status.overallStatus).toBe("CHANGES_REQUESTED");
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("Case 4 & 5: tracks milestones from SCOPE.md and SWE Light progress.md alongside multi-agent GATE_STATUS.md matrix", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-tw-case4-"));
+		try {
+			const agentsDir = path.join(tmpDir, ".agents");
+			await fs.mkdir(path.join(agentsDir, "TeamworkSweLight"), { recursive: true });
+			await fs.mkdir(path.join(agentsDir, "TeamworkChallenger"), { recursive: true });
+			await Bun.write(
+				path.join(agentsDir, "SCOPE.md"),
+				[
+					"# Scope: Rate Limiter",
+					"",
+					"| Milestone | Status | Details |",
+					"|---|---|---|",
+					"| M1: Token Bucket Core | COMPLETED | Implemented atomic refill |",
+					"| M2: Adversarial Stress Harness | IN_PROGRESS | Running 100k concurrent requests |",
+				].join("\n"),
+			);
+			await Bun.write(
+				path.join(agentsDir, "TeamworkSweLight", "GATE_STATUS.md"),
+				[
+					"## Gate — Iteration 2",
+					"| Milestone | Verdict | Notes |",
+					"|---|---|---|",
+					"| M1 | APPROVE | Reviewer approved |",
+					"| M2 | CLEAN | Forensic auditor clean |",
+				].join("\n"),
+			);
+			await Bun.write(
+				path.join(agentsDir, "TeamworkChallenger", "handoff.md"),
+				"## Challenge Summary\n- **Verdict**: APPROVE\n",
+			);
+
+			const status = await inspectTeamworkStatus(tmpDir);
+			expect(status.milestones).toHaveLength(2);
+			expect(status.milestones[0]?.id).toBe("M1");
+			expect(status.milestones[0]?.status).toBe("COMPLETED");
+			expect(status.milestones[1]?.id).toBe("M2");
+			expect(status.milestones[1]?.status).toBe("IN_PROGRESS");
+			expect(status.gateStatus.history).toHaveLength(2);
+			expect(status.overallStatus).toBe("IN_PROGRESS");
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("Case 6: enforces Binary Veto when === VICTORY AUDIT REPORT === emits VICTORY REJECTED and certifies only on VICTORY CONFIRMED", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-tw-case6-"));
+		try {
+			const agentsDir = path.join(tmpDir, ".agents");
+			const victoryDir = path.join(agentsDir, "TeamworkVictoryAuditor");
+			await fs.mkdir(victoryDir, { recursive: true });
+			await Bun.write(
+				path.join(agentsDir, "ORIGINAL_REQUEST.md"),
+				"# Original User Request\n\n## 2026-10-14T12:00:00Z\nImplement CLI with --json flag.\n",
+			);
+			// Even if milestones claim COMPLETED in progress.md:
+			await Bun.write(
+				path.join(agentsDir, "progress.md"),
+				"| Milestone | Status | Details |\n|---|---|---|\n| M1: CLI | COMPLETED | Done |\n",
+			);
+			// Phase 6a: Victory Auditor rejects due to Phase C discrepancy
+			await Bun.write(
+				path.join(victoryDir, "victory_report.md"),
+				[
+					"=== VICTORY AUDIT REPORT ===",
+					"",
+					"VERDICT: VICTORY REJECTED",
+					"",
+					"PHASE A — TIMELINE:",
+					"  Result: PASS",
+					"  Anomalies: none",
+					"",
+					"PHASE B — INTEGRITY CHECK:",
+					"  Mode: Development",
+					"  Result: PASS",
+					"  Details: Zero fake mocks",
+					"",
+					"PHASE C — INDEPENDENT TEST EXECUTION:",
+					"  Test command: bun test",
+					"  Your results: 4 passed, 1 failed (--json flag missing)",
+					"  Claimed results: 5 passed",
+					"  Match: NO — --json flag not implemented",
+				].join("\n"),
+			);
+
+			const rejectedStatus = await inspectTeamworkStatus(tmpDir);
+			expect(rejectedStatus.victoryStatus.verdict).toBe("VICTORY REJECTED");
+			// Binary veto MUST override the milestone's COMPLETED claim!
+			expect(rejectedStatus.overallStatus).toBe("VICTORY REJECTED");
+			expect(formatTeamworkStatus(rejectedStatus)).toContain("VICTORY REJECTED");
+
+			// Phase 6b: After remediation and re-audit, Victory Auditor confirms
+			await Bun.write(
+				path.join(victoryDir, "victory_report.md"),
+				[
+					"=== VICTORY AUDIT REPORT ===",
+					"",
+					"VERDICT: VICTORY CONFIRMED",
+					"",
+					"PHASE A — TIMELINE:",
+					"  Result: PASS",
+					"  Anomalies: none",
+					"",
+					"PHASE B — INTEGRITY CHECK:",
+					"  Mode: Development",
+					"  Result: PASS",
+					"  Details: Clean",
+					"",
+					"PHASE C — INDEPENDENT TEST EXECUTION:",
+					"  Test command: bun test",
+					"  Your results: 5 passed, 0 failed",
+					"  Claimed results: 5 passed, 0 failed",
+					"  Match: YES",
+				].join("\n"),
+			);
+
+			const confirmedStatus = await inspectTeamworkStatus(tmpDir);
+			expect(confirmedStatus.victoryStatus.verdict).toBe("VICTORY CONFIRMED");
+			expect(confirmedStatus.overallStatus).toBe("VICTORY CONFIRMED");
+			expect(formatTeamworkStatus(confirmedStatus)).toContain("VICTORY CONFIRMED");
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
 	});
 });

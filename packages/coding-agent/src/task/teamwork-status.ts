@@ -83,11 +83,20 @@ export interface TeamworkProjectStatus {
 
 export const AGENT_ORDER: ReadonlyArray<string> = [
 	"TeamworkOrchestrator",
+	"TeamworkSweLight",
+	"TeamworkDependencyAuditor",
 	"TeamworkExplorer",
+	"TeamworkSpecMiner",
+	"TeamworkDeepInvestigator",
 	"TeamworkWorker",
+	"TeamworkImplementer",
+	"TeamworkDeepCoder",
+	"TeamworkTestWriter",
 	"TeamworkReviewer",
 	"TeamworkChallenger",
 	"TeamworkAuditor",
+	"TeamworkDocumentReviewer",
+	"TeamworkDocumentVictoryAuditor",
 	"TeamworkVictoryAuditor",
 	"TeamworkFork",
 	"TeamworkForkPreview",
@@ -961,9 +970,14 @@ export async function inspectTeamworkStatus(cwd: string = process.cwd()): Promis
 	// 2. Progress / Milestones
 	const progressCandidates = [
 		path.join(agentDir, "TeamworkOrchestrator", "progress.md"),
+		path.join(agentDir, "TeamworkSweLight", "progress.md"),
 		path.join(agentDir, "progress.md"),
 		path.join(agentDir, "TeamworkOrchestrator", "plan.md"),
 		path.join(agentDir, "plan.md"),
+		path.join(agentDir, "SCOPE.md"),
+		path.join(agentDir, "PROJECT.md"),
+		path.join(agentDir, "TeamworkOrchestrator", "SCOPE.md"),
+		path.join(agentDir, "TeamworkOrchestrator", "PROJECT.md"),
 	];
 
 	let progressParsed: ProgressParsed = { milestones: [] };
@@ -981,6 +995,7 @@ export async function inspectTeamworkStatus(cwd: string = process.cwd()): Promis
 	const gateCandidates = [
 		path.join(agentDir, "GATE_STATUS.md"),
 		path.join(agentDir, "TeamworkOrchestrator", "GATE_STATUS.md"),
+		path.join(agentDir, "TeamworkSweLight", "GATE_STATUS.md"),
 		path.join(agentDir, "TeamworkAuditor", "audit_report.md"),
 		path.join(agentDir, "TeamworkAuditor", "handoff.md"),
 	];
@@ -999,8 +1014,12 @@ export async function inspectTeamworkStatus(cwd: string = process.cwd()): Promis
 	// 4. Victory Report
 	const victoryCandidates = [
 		path.join(agentDir, "TeamworkVictoryAuditor", "victory_report.md"),
+		path.join(agentDir, "TeamworkVictoryAuditor", "victory_audit.md"),
 		path.join(agentDir, "TeamworkVictoryAuditor", "handoff.md"),
+		path.join(agentDir, "TeamworkDocumentVictoryAuditor", "victory_report.md"),
+		path.join(agentDir, "TeamworkDocumentVictoryAuditor", "handoff.md"),
 		path.join(agentDir, "victory_report.md"),
+		path.join(agentDir, "victory_audit.md"),
 	];
 
 	let victoryStatus: TeamworkVictoryInfo = { exists: false, verdict: "NONE" };

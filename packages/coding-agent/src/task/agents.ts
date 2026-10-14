@@ -29,6 +29,8 @@ import teamworkForkMd from "../prompts/agents/teamwork-fork.md" with { type: "te
 import teamworkForkPreviewMd from "../prompts/agents/teamwork-fork-preview.md" with { type: "text" };
 import teamworkDeepcoderMd from "../prompts/agents/teamwork-deepcoder.md" with { type: "text" };
 import teamworkDeepinvestigatorMd from "../prompts/agents/teamwork-deepinvestigator.md" with { type: "text" };
+import teamworkTestWriterMd from "../prompts/agents/teamwork-test-writer.md" with { type: "text" };
+import teamworkSpecMinerMd from "../prompts/agents/teamwork-spec-miner.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -104,6 +106,8 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-fork-preview.md", template: teamworkForkPreviewMd },
 	{ fileName: "teamwork-deepcoder.md", template: teamworkDeepcoderMd },
 	{ fileName: "teamwork-deepinvestigator.md", template: teamworkDeepinvestigatorMd },
+	{ fileName: "teamwork-test-writer.md", template: teamworkTestWriterMd },
+	{ fileName: "teamwork-spec-miner.md", template: teamworkSpecMinerMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.
