@@ -178,6 +178,7 @@ import { MAGIC_KEYWORDS, type MagicKeywordContext, type MagicKeywordId } from ".
 import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
+import { expandAgyCompatSlashCommand } from "../slash-commands/builtin-agy-compat";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile, resolvePlanFilePath } from "../plan-mode/plan-files";
@@ -7327,6 +7328,9 @@ export class AgentSession implements SettingsScope {
 			// Only if text still starts with "/" (wasn't transformed by custom command)
 			if (text.startsWith("/")) {
 				text = expandSlashCommand(text, this.#slashCommands);
+			}
+			if (text.startsWith("/")) {
+				text = await expandAgyCompatSlashCommand(text, this.sessionManager.getCwd());
 			}
 		}
 

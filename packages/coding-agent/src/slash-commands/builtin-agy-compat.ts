@@ -1,3 +1,5 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import grillMePrompt from "../prompts/slash-commands/grill-me.md" with { type: "text" };
 import type { SlashCommandSpec } from "./types";
 import { formatTeamworkStatus, inspectTeamworkStatus } from "../task/teamwork-status";
 import {
@@ -6,7 +8,28 @@ import {
 	resolveTeamworkForkModel,
 	resolveTeamworkForkPreviewModel,
 } from "../task/teamwork-fork-model";
+
+export function buildGrillMePrompt(args?: string): string {
+	const trimmed = args?.trim();
+	return prompt.render(grillMePrompt, { arguments: trimmed || undefined }).trim();
+}
+
 export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
+	{
+		name: "grill-me",
+		aliases: ["grill"],
+		icon: "question",
+		description: "Interview me to align on a plan (agy compat)",
+		inlineHint: "[task or design to interview about]",
+		allowArgs: true,
+		handle: async (command, _runtime) => {
+			return { prompt: buildGrillMePrompt(command.args) };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			return { prompt: buildGrillMePrompt(command.args) };
+		},
+	},
 	{
 		name: "learn",
 		icon: "memory",
@@ -198,3 +221,34 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 		},
 	},
 ];
+
+const AGY_COMPAT_COMMAND_BY_NAME: Record<string, SlashCommandSpec> = Object.fromEntries(
+	BUILTIN_AGY_COMPAT_SLASH_COMMANDS.flatMap(cmd => [
+		[cmd.name, cmd] as const,
+		...(cmd.aliases ?? []).map(alias => [alias, cmd] as const),
+	]),
+);
+
+/**
+ * Expand a leading AGY-compat slash command (such as `/grill-me`, `/boost`,
+ * `/teamwork-preview`, `/learn`) when submitted via headless `omp -p` or
+ * stacked after a mode command like `/plan /grill-me <prompt>`.
+ */
+export async function expandAgyCompatSlashCommand(text: string, cwd?: string): Promise<string> {
+	const trimmed = text.trimStart();
+	if (!trimmed.startsWith("/")) return text;
+	const body = trimmed.slice(1);
+	if (!body) return text;
+	const firstWs = body.search(/\s/);
+	const name = firstWs === -1 ? body : body.slice(0, firstWs);
+	const args = firstWs === -1 ? "" : body.slice(firstWs + 1).trim();
+	const spec = Object.hasOwn(AGY_COMPAT_COMMAND_BY_NAME, name) ? AGY_COMPAT_COMMAND_BY_NAME[name] : undefined;
+	if (!spec?.handle) return text;
+	const result = await spec.handle({ name, args, text: trimmed }, { cwd: cwd ?? process.cwd() } as Parameters<
+		NonNullable<SlashCommandSpec["handle"]>
+	>[1]);
+	if (result && typeof result === "object" && "prompt" in result) {
+		return result.prompt;
+	}
+	return text;
+}

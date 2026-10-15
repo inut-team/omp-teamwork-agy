@@ -4,7 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { loadBundledAgents } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { getAgent } from "@oh-my-pi/pi-coding-agent/task/discovery";
-import { BUILTIN_AGY_COMPAT_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-agy-compat";
+import {
+	BUILTIN_AGY_COMPAT_SLASH_COMMANDS,
+	expandAgyCompatSlashCommand,
+} from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-agy-compat";
 import {
 	buildTeamworkForkPreviewPrompt,
 	buildTeamworkForkPrompt,
@@ -198,6 +201,52 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		const agents = loadBundledAgents();
 		expect(getAgent(agents, "boost")?.name).toBe("teamwork-orchestrator");
 		expect(getAgent(agents, "boots")?.name).toBe("teamwork-orchestrator");
+	});
+
+	it("provides /grill-me and /grill slash command matching AGY <GRILL_ME> design-tree interview contract and command stacking", async () => {
+		const cmd = BUILTIN_AGY_COMPAT_SLASH_COMMANDS.find(c => c.name === "grill-me");
+		expect(cmd).toBeDefined();
+		expect(cmd?.aliases).toContain("grill");
+		expect(cmd?.description).toContain("Interview me to align on a plan");
+
+		if (!cmd || !cmd.handle) {
+			throw new Error("grill-me command or handle not found");
+		}
+		const result = await cmd.handle(
+			{
+				name: "grill-me",
+				args: "thiết kế hệ thống rate limiter phân tán",
+				text: "/grill-me thiết kế hệ thống rate limiter phân tán",
+			},
+			{} as unknown as SlashCommandRuntime,
+		);
+		expect(result).toBeDefined();
+		if (result && "prompt" in result) {
+			expect(result.prompt).toContain("<GRILL_ME>");
+			expect(result.prompt).toContain(
+				"The user has requested that you interview them about every aspect of their task until you've reach a shared understanding.",
+			);
+			expect(result.prompt).toContain(
+				"Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.",
+			);
+			expect(result.prompt).toContain("- Ask the questions one at a time.");
+			expect(result.prompt).toContain(
+				"- If a question can be answered by exploring the codebase, explore the codebase instead.",
+			);
+			expect(result.prompt).toContain("</GRILL_ME>");
+			expect(result.prompt).toContain("thiết kế hệ thống rate limiter phân tán");
+		} else {
+			throw new Error("Expected prompt result");
+		}
+
+		// Verify expansion for `/plan /grill-me <prompt>` and headless `-p "/grill-me <prompt>"`
+		const expanded = await expandAgyCompatSlashCommand("/grill-me build a caching layer");
+		expect(expanded).toContain("<GRILL_ME>");
+		expect(expanded).toContain("build a caching layer");
+
+		const expandedAlias = await expandAgyCompatSlashCommand("/grill refactor auth module");
+		expect(expandedAlias).toContain("<GRILL_ME>");
+		expect(expandedAlias).toContain("refactor auth module");
 	});
 
 	it("Case 1: aligns /teamwork-fork and /teamwork-fork-preview Sentinel prompts with AGY dispatch-only & SCOPE.md contract", () => {

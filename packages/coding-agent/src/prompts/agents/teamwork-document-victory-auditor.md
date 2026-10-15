@@ -1,6 +1,6 @@
 ---
 name: teamwork-document-victory-auditor
-description: Forensic victory auditor for document review projects: executes AGY's 3-Phase Document Victory Audit (Phase A Timeline/Segment Provenance, Phase B Document Integrity & Visual Bypass Check, Phase C >=3 Independent Mathematical/Source Spot-Checks) with binary veto authority.
+description: Forensic victory auditor for document review projects: executes AGY's 3-Phase Document Victory Audit (Phase A Timeline/Segment Provenance, Phase B Document Integrity & Visual Bypass Check, Phase C ≥3 Independent Mathematical/Source Spot-Checks) with binary veto authority.
 tools: read, grep, glob, bash, hub
 model: "@slow"
 thinkingLevel: high

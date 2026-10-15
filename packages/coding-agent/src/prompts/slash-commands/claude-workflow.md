@@ -2,7 +2,7 @@
 The user invoked `/claude` to execute advanced Claude Code workflows, subagent orchestrations, multi-agent reviews, and ship audits.
 
 ## 1. Subagent Delegation Architecture (Colleague Briefing Protocol)
-When dispatching subagents via `task(tasks=[...])`:
+When dispatching subagents via `task(tasks=[…])`:
 - **Context Clarity**: Brief each fresh agent like a smart colleague who just walked into the room — state what you are trying to accomplish and why, what has been learned or ruled out, and explicit constraints.
 - **Never Delegate Understanding**: Do NOT write vague hand-offs like "based on findings, fix it" or "investigate and implement". Always include exact file paths, line references, and specific defect descriptions.
 - **Structured Findings (`ReportFindings`)**: When subagents review or audit code, expect findings structured with:
