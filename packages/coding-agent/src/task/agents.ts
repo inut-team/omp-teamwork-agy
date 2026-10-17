@@ -11,6 +11,7 @@ import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { t
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
+import seanceMd from "../prompts/agents/seance.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import teamworkAuditorMd from "../prompts/agents/teamwork-auditor.md" with { type: "text" };
 import teamworkChallengerMd from "../prompts/agents/teamwork-challenger.md" with { type: "text" };
@@ -64,6 +65,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "scout.md", template: scoutMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
 	{ fileName: "security-reviewer.md", template: securityReviewerMd },
+	{ fileName: "seance.md", template: seanceMd },
 	{
 		fileName: "task.md",
 		frontmatter: {
