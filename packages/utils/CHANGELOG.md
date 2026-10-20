@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed frontmatter repair deleting HTML comments from document bodies and plain markdown; it now strips only leading comments ahead of the opening delimiter, so prompt bodies keep their comments ([#16481](https://github.com/can1357/oh-my-pi/pull/16481) by [@adi-IL](https://github.com/adi-IL)).
+
+## [18.12.2] - 2026-10-18
+
+### Added
+
+- Added `readSalvageableRows()` to read the rows of a damaged SQLite table that are still readable, skipping only the damaged pages ([#15751](https://github.com/can1357/oh-my-pi/pull/15751) by [@Shadorain](https://github.com/Shadorain))
+
+## [18.12.0] - 2026-10-17
+
 ### Added
 
 - Added `sanitizeTextDeep()`, which applies `sanitizeText()` to every string in a JSON-shaped value without mutating it ([#15963](https://github.com/can1357/oh-my-pi/issues/15963))
