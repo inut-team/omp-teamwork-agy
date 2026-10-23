@@ -1,6 +1,11 @@
 import * as fs from "node:fs";
 import * as tls from "node:tls";
-import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import {
+	anthropicApiVersionAcceptsSamplingParams,
+	isAnthropicSigningProxyUrl,
+	isOfficialAnthropicApiUrl,
+	resolveAnthropicApiVersion,
+} from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { hostMatchesUrl, isVertexRawPredictUrl, modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -400,7 +405,6 @@ const sharedHeaders = {
 	"Accept-Encoding": "gzip, deflate, br, zstd",
 	Connection: "keep-alive",
 	"Content-Type": "application/json",
-	"anthropic-version": "2023-06-01",
 	"anthropic-dangerous-direct-browser-access": "true",
 	"x-app": "cli",
 };
@@ -428,6 +432,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			(oauthToken ? buildClaudeCodeBetas({ agentRequest: true, thinkingRequest: true }) : []),
 		extraBetas,
 	);
+	const apiVersion = resolveAnthropicApiVersion(options.baseUrl);
 	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
 	const isCloudflare = options.isCloudflareAiGateway ?? false;
 	const honorAuthorization = !oauthToken && !isCloudflare;
@@ -476,6 +481,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			...modelHeaders,
 			Accept: acceptHeader,
 			...sharedHeaders,
+			"anthropic-version": apiVersion,
 			...(incomingUserAgent ? { "User-Agent": incomingUserAgent } : {}),
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
 			"cf-aig-authorization": `Bearer ${options.apiKey}`,
@@ -493,7 +499,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			...claudeCodeHeaders,
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
 			"anthropic-dangerous-direct-browser-access": "true",
-			"anthropic-version": "2023-06-01",
+			"anthropic-version": apiVersion,
 			Authorization: `Bearer ${options.apiKey}`,
 			"x-app": "cli",
 			Connection: "keep-alive",
@@ -514,6 +520,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			Accept: acceptHeader,
 			...(bearer ? { Authorization: bearer } : {}),
 			...sharedHeaders,
+			"anthropic-version": apiVersion,
 			...(incomingUserAgent ? { "User-Agent": incomingUserAgent } : {}),
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
 			...(incomingApiKey ? { "X-Api-Key": incomingApiKey } : {}),
@@ -523,6 +530,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 			...modelHeaders,
 			Accept: acceptHeader,
 			...sharedHeaders,
+			"anthropic-version": apiVersion,
 			...(incomingUserAgent ? { "User-Agent": incomingUserAgent } : {}),
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
 			...(incomingAuthorization ? { Authorization: incomingAuthorization } : {}),
@@ -993,12 +1001,21 @@ type AnthropicToolResultContent =
 	| Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }>;
 
 /**
- * Convert content blocks to Anthropic API format
+ * Convert content blocks to Anthropic API format.
+ *
+ * Inline media this path cannot send as an `image` block (video, PDF, HEIC, …)
+ * fails the request when `rejectUnsupportedMedia` is set, so the turn that
+ * attached it errors instead of being answered as if nothing were attached.
+ * Elsewhere it keeps its `[unsupported image: …]` stub: an older turn has
+ * already been answered, failing on it would fail every later request of the
+ * conversation, and changing the stub's bytes would break the replayed prefix
+ * that signed thinking is bound to.
  */
 function convertContentBlocks(
 	content: (TextContent | ImageContent)[],
-	supportsImages = true,
+	options: { supportsImages: boolean; rejectUnsupportedMedia?: boolean },
 ): AnthropicToolResultContent {
+	const { supportsImages, rejectUnsupportedMedia = false } = options;
 	const blocks: Array<{ type: "text"; text: string } | { type: "image"; source: AnthropicImageSource }> = [];
 	let sawText = false;
 	let sawImage = false;
@@ -1025,6 +1042,11 @@ function convertContentBlocks(
 		} else {
 			const mediaType = normalizeAnthropicImageMediaType(block.mimeType);
 			if (!mediaType) {
+				if (rejectUnsupportedMedia) {
+					throw new AIError.ValidationError(
+						`${block.mimeType} attachments are not supported here; send JPEG, PNG, GIF or WebP images instead`,
+					);
+				}
 				blocks.push({ type: "text", text: `[unsupported image: ${block.mimeType}]` });
 				continue;
 			}
@@ -2088,12 +2110,29 @@ function reportedDropKey(params: MessageCreateParamsStreaming, path: string | un
 }
 
 /**
+ * Warn once for the signed thinking blocks the API dropped from one request
+ * after the conversation prefix changed: the count and first path at warn,
+ * every path at debug. One prefix change can drop hundreds of blocks in a
+ * single request, which would otherwise flood the log one line per block.
+ */
+export function logDroppedThinking(provider: string, model: string, paths: Array<string | undefined>): void {
+	if (paths.length === 0) return;
+	logger.warn(`${provider}: dropped thinking block after conversation prefix changed`, {
+		model,
+		count: paths.length,
+		path: paths[0],
+	});
+	if (paths.length > 1) logger.debug(`${provider}: dropped thinking block paths`, { model, paths });
+}
+
+/**
  * Record server-reported input rewrites on the response. A `drop_block`
  * request keeps replaying the transcript verbatim afterwards: the API drops
  * the same invalid blocks again on every later request (unbilled), while
  * omitting them client-side would change the bytes the drop request just
  * cached and can cost another message-prefix cache miss from the first
- * dropped block on. Repeat reports of an already-warned drop log at debug.
+ * dropped block on. Newly dropped blocks warn once per report (see
+ * {@link logDroppedThinking}); repeats of already-warned drops log at debug.
  */
 function applyReportedInputTransformations(
 	output: AssistantMessage,
@@ -2117,6 +2156,7 @@ function applyReportedInputTransformations(
 	}
 	if (fresh.length === 0) return;
 	output.inputTransformations = [...(output.inputTransformations ?? []), ...fresh];
+	const dropped: Array<string | undefined> = [];
 	let repeated = 0;
 	for (const transformation of fresh) {
 		if (transformation.reason !== "prefix_binding_mismatch") continue;
@@ -2128,11 +2168,9 @@ function applyReportedInputTransformations(
 			}
 			state.reportedPrefixDroppedThinking.add(dropKey);
 		}
-		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
-			model: output.model,
-			path: transformation.path,
-		});
+		dropped.push(transformation.path);
 	}
+	logDroppedThinking("anthropic", output.model, dropped);
 	if (repeated > 0) {
 		logger.debug("anthropic: API re-dropped previously reported thinking blocks", {
 			model: output.model,
@@ -4236,7 +4274,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			{
 				Accept: stream ? "text/event-stream" : "application/json",
 				"Content-Type": "application/json",
-				"anthropic-version": "2023-06-01",
+				"anthropic-version": resolveAnthropicApiVersion(baseUrl),
 				"Anthropic-Dangerous-Direct-Browser-Access": "true",
 				Authorization: `Bearer ${copilotApiKey}`,
 				...(betaFeatures.length > 0 ? { "anthropic-beta": buildBetaHeader([], betaFeatures) } : {}),
@@ -5662,10 +5700,13 @@ function buildParams(
 		stream: true,
 	};
 
-	// Opus 4.7+ and Fable/Mythos 5 reject non-default sampling parameters with 400 error.
+	// Opus 4.7+ and Fable/Mythos 5 reject non-default sampling parameters with 400 error,
+	// and API version 2026-10-21 rejects them on every model.
 	const thinkingType = params.thinking?.type;
 	const allowSamplingParams =
-		model.compat.supportsSamplingParams && (thinkingType === undefined || thinkingType === "disabled");
+		model.compat.supportsSamplingParams &&
+		anthropicApiVersionAcceptsSamplingParams(resolveAnthropicApiVersion(vertexRequestUrl)) &&
+		(thinkingType === undefined || thinkingType === "disabled");
 	if (allowSamplingParams && options?.temperature !== undefined) {
 		params.temperature = options.temperature;
 	}
@@ -5804,7 +5845,7 @@ function buildToolResultBlock(
 	msg: ToolResultMessage,
 	hoistedImages: ContentBlockParam[],
 ): ContentBlockParam {
-	let content = convertContentBlocks(msg.content, model.input.includes("image"));
+	let content = convertContentBlocks(msg.content, { supportsImages: model.input.includes("image") });
 	// Anthropic rejects images inside error tool results ("all content must be
 	// type `text` if `is_error` is true") — keep the text in the block and
 	// hoist the images after the message's tool_result run.
@@ -5982,6 +6023,29 @@ export function convertAnthropicMessages(
 		undefined,
 		opts?.credentialId,
 	);
+	// The turn this request answers: the last message that started a run (a
+	// `user` message, or a `developer` prompt such as a `/guided-goal` kickoff
+	// or the continue shortcut, which is `synthetic` or user-attributed) with no
+	// assistant reply after it. Developer reminders after it don't move it.
+	// Media Claude cannot read fails the request there (see
+	// convertContentBlocks). Only that turn is checked: once another prompt
+	// follows, the failed one is history and gets the omission note, so the
+	// session never stays stuck. A compaction request only summarizes, so it
+	// never fails on an attachment.
+	let unansweredUserIndex = -1;
+	if (!opts?.compactionRequest) {
+		for (let index = transformedMessages.length - 1; index >= 0; index--) {
+			const message = transformedMessages[index];
+			if (message.role === "assistant") break;
+			if (
+				message.role === "user" ||
+				(message.role === "developer" && (message.synthetic === true || message.attribution === "user"))
+			) {
+				unansweredUserIndex = index;
+				break;
+			}
+		}
+	}
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
@@ -6045,7 +6109,10 @@ export function convertAnthropicMessages(
 					content = msg.content.toWellFormed();
 				}
 			} else {
-				const contentBlocks = convertContentBlocks(msg.content, model.input.includes("image"));
+				const contentBlocks = convertContentBlocks(msg.content, {
+					supportsImages: model.input.includes("image"),
+					rejectUnsupportedMedia: i === unansweredUserIndex,
+				});
 				if (typeof contentBlocks === "string") {
 					if (contentBlocks.trim().length === 0) {
 						if (!hasProviderControls) continue;
@@ -6652,8 +6719,107 @@ function normalizeAnthropicToolSchemaNode(
 	return result;
 }
 
+function stringEntries(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/**
+ * Whether a root combinator variant can merge into the root object. `allOf` branches
+ * may be open (every branch must hold, so an open one loosens nothing); an open
+ * `anyOf`/`oneOf` variant admits any value for keys other variants declare.
+ */
+function isFoldableAnthropicRootVariant(variant: unknown, conjunctive: boolean): variant is Record<string, unknown> {
+	if (!isRecord(variant)) return false;
+	const type = pickAnthropicEffectiveScalarType(variant);
+	if (type !== undefined && type !== "object") return false;
+	if (variant.$ref !== undefined || variant.not !== undefined || variant.if !== undefined) return false;
+	if (COMBINATOR_KEYS.some(key => variant[key] !== undefined)) return false;
+	return conjunctive || variant.additionalProperties === undefined || variant.additionalProperties === false;
+}
+
+/**
+ * Fold root `anyOf`/`oneOf`/`allOf` object variants into the root object.
+ *
+ * Messages rejects combinators at the tool `input_schema` root, so
+ * {@link normalizeAnthropicToolSchemaNode} spills them into `description`. Without
+ * this fold a pure root union reaches the wire as a closed object with no
+ * properties, which admits only `{}`. The folded root admits every value the
+ * union admits:
+ * - properties merge; a key declared differently by several variants keeps every
+ *   declaration under a nested `anyOf` (`allOf` for a root `allOf`);
+ * - `required` gains the keys every `anyOf`/`oneOf` variant requires, or every
+ *   key any `allOf` branch requires;
+ * - variants that cannot merge (non-object, `$ref`, nested combinators, open
+ *   `anyOf`/`oneOf` members) open the root with `additionalProperties: true`.
+ *
+ * The exact union still reaches the model through the spilled description, and
+ * {@link validateToolArguments} enforces it against the original tool schema.
+ */
+function foldAnthropicRootCombinators(schema: Record<string, unknown>): Record<string, unknown> {
+	const rootType = pickAnthropicEffectiveScalarType(schema);
+	if (rootType !== undefined && rootType !== "object") return schema;
+	if (!COMBINATOR_KEYS.some(key => Array.isArray(schema[key]) && schema[key].length > 0)) return schema;
+
+	const properties: Record<string, unknown> = isRecord(schema.properties) ? { ...schema.properties } : {};
+	const required = new Set(stringEntries(schema.required));
+	let open = false;
+	for (const key of COMBINATOR_KEYS) {
+		const variants = schema[key];
+		if (!Array.isArray(variants) || variants.length === 0) continue;
+		const conjunctive = key === "allOf";
+		if (!variants.every(variant => isFoldableAnthropicRootVariant(variant, conjunctive))) {
+			open = true;
+			continue;
+		}
+
+		const declared = new Map<string, unknown[]>();
+		let shared: Set<string> | undefined;
+		for (const variant of variants) {
+			if (isRecord(variant.properties)) {
+				for (const name in variant.properties) {
+					if (!Object.hasOwn(variant.properties, name)) continue;
+					const propertySchema = variant.properties[name];
+					const declarations = declared.get(name) ?? [];
+					if (!declarations.some(entry => Bun.deepEquals(entry, propertySchema)))
+						declarations.push(propertySchema);
+					declared.set(name, declarations);
+				}
+			}
+			const variantRequired = stringEntries(variant.required);
+			if (conjunctive) {
+				for (const name of variantRequired) required.add(name);
+			} else {
+				shared = new Set(shared ? variantRequired.filter(name => shared?.has(name)) : variantRequired);
+			}
+			if (variant.additionalProperties !== undefined && variant.additionalProperties !== false) open = true;
+		}
+		for (const name of shared ?? []) required.add(name);
+		// A key the root (or an earlier combinator) already declares keeps that
+		// declaration: both must hold, so either alone admits every valid value.
+		for (const [name, declarations] of declared) {
+			if (Object.hasOwn(properties, name)) continue;
+			properties[name] =
+				declarations.length === 1 ? declarations[0] : { [conjunctive ? "allOf" : "anyOf"]: declarations };
+		}
+	}
+
+	const folded: Record<string, unknown> = { ...schema };
+	if (Object.keys(properties).length > 0 || isRecord(schema.properties)) folded.properties = properties;
+	if (required.size > 0) folded.required = [...required];
+	if (open && folded.additionalProperties === undefined && isRecord(folded.properties)) {
+		folded.additionalProperties = true;
+	}
+	return folded;
+}
+
+/**
+ * Normalize a tool parameter schema into an Anthropic `input_schema`: root
+ * combinators fold into the root object ({@link foldAnthropicRootCombinators}),
+ * then {@link normalizeAnthropicToolSchemaNode} applies the keyword whitelist.
+ */
 export function normalizeAnthropicToolSchema(schema: unknown): unknown {
-	return normalizeAnthropicToolSchemaNode(schema, new WeakMap(), true);
+	const root = isRecord(schema) ? foldAnthropicRootCombinators(schema) : schema;
+	return normalizeAnthropicToolSchemaNode(root, new WeakMap(), true);
 }
 
 type AnthropicToolSchemaPlan = {
@@ -6877,9 +7043,7 @@ function buildAnthropicBaseToolInputSchema(tool: Tool): Record<string, unknown> 
 		...jsonSchema,
 		type: "object",
 		properties: isRecord(jsonSchema.properties) ? jsonSchema.properties : {},
-		required: Array.isArray(jsonSchema.required)
-			? jsonSchema.required.filter((entry): entry is string => typeof entry === "string")
-			: [],
+		required: stringEntries(jsonSchema.required),
 	}) as Record<string, unknown>;
 }
 
