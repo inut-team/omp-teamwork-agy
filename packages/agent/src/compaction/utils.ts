@@ -217,6 +217,43 @@ export function truncateToolResultForSummary(text: string): string {
 	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 
+const TASK_PROMPT_PREVIEW_MAX_CHARS = 240;
+
+function compactTaskTextField(value: unknown): unknown {
+	if (typeof value !== "string" || value.length <= TASK_PROMPT_PREVIEW_MAX_CHARS) return value;
+	const firstLine = value.split("\n").find(line => line.trim().length > 0) ?? value;
+	const preview = firstLine.slice(0, TASK_PROMPT_PREVIEW_MAX_CHARS).trimEnd();
+	return `${preview}… [+${value.length - preview.length} chars]`;
+}
+
+/**
+ * Compact `task` tool call arguments for summary serialization (AGY 1.4.3+ parity):
+ * preserve each subagent's `name`, `agent`, `solutionSpace`, `model`, and a short
+ * preview of `context`/`task` so long initial dispatch prompts do not crowd out
+ * subagent identities and conversation IDs during compaction.
+ */
+export function compactToolCallForSummary(call: ToolCall): ToolCall {
+	if (call.name !== "task" || !call.arguments || typeof call.arguments !== "object") return call;
+	const args = call.arguments as Record<string, unknown>;
+	const rawTasks = Array.isArray(args.tasks) ? args.tasks : undefined;
+	const compactedContext = compactTaskTextField(args.context);
+	const compactedTasks = rawTasks?.map(item => {
+		if (!item || typeof item !== "object") return item;
+		const entry = item as Record<string, unknown>;
+		if (typeof entry.task !== "string" || entry.task.length <= TASK_PROMPT_PREVIEW_MAX_CHARS) return entry;
+		return { ...entry, task: compactTaskTextField(entry.task) };
+	});
+	if (compactedContext === args.context && compactedTasks === rawTasks) return call;
+	return {
+		...call,
+		arguments: {
+			...args,
+			...(compactedContext !== undefined ? { context: compactedContext } : {}),
+			...(compactedTasks !== undefined ? { tasks: compactedTasks } : {}),
+		},
+	};
+}
+
 const SUMMARY_BOUNDARY_TAG_RE = /<\s*\/?\s*(?:conversation|previous-summary)\s*>/gi;
 
 /** Keep untrusted summary input from closing or impersonating harness-owned boundaries. */
@@ -257,12 +294,14 @@ export function serializeConversation(messages: Message[], dialect?: Dialect, dr
 		const processed: Message[] = [];
 		for (const msg of messages) {
 			if (msg.role === "assistant") {
-				const content = msg.content.filter(
-					block =>
-						(block.type !== "toolCall" || !uselessCallIds.has(block.id)) &&
-						(!dropThinking || block.type !== "thinking"),
-				);
-				if (content.length > 0) processed.push(content.length === msg.content.length ? msg : { ...msg, content });
+				const content = msg.content
+					.filter(
+						block =>
+							(block.type !== "toolCall" || !uselessCallIds.has(block.id)) &&
+							(!dropThinking || block.type !== "thinking"),
+					)
+					.map(block => (block.type === "toolCall" ? compactToolCallForSummary(block) : block));
+				if (content.length > 0) processed.push({ ...msg, content });
 				continue;
 			}
 			if (msg.role === "toolResult") {
@@ -306,7 +345,7 @@ export function serializeConversation(messages: Message[], dialect?: Dialect, dr
 					thinkingParts.push(block.thinking);
 				} else if (block.type === "toolCall") {
 					if (uselessCallIds.has(block.id)) continue;
-					toolCalls.push(block);
+					toolCalls.push(compactToolCallForSummary(block));
 				}
 			}
 

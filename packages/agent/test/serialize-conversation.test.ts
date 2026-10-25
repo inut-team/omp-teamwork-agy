@@ -166,4 +166,34 @@ describe("serializeConversation — useless pairs", () => {
 		expect(out).toContain(reasoning);
 		expect(out).toContain("<thinking>");
 	});
+
+	test("compacts oversized task dispatch prompts while preserving subagent name, agent type, and result", () => {
+		const longPrompt = `${"Implement the distributed lexer and parser milestone. ".repeat(20)}FINAL_TAIL_MARKER`;
+		const out = serializeConversation([
+			assistantMessage([
+				{
+					type: "toolCall",
+					id: "t1",
+					name: "task",
+					arguments: {
+						context: longPrompt,
+						tasks: [
+							{
+								name: "LexerWorker",
+								agent: "teamwork-worker",
+								solutionSpace: "lexer implementation",
+								task: longPrompt,
+							},
+						],
+					},
+				},
+			]),
+			toolResultMessage("t1", "Completed: LexerWorker (agent://LexerWorker) — all 42 tests pass"),
+		]);
+
+		expect(out).toContain("LexerWorker");
+		expect(out).toContain("teamwork-worker");
+		expect(out).toContain("agent://LexerWorker");
+		expect(out).not.toContain("FINAL_TAIL_MARKER");
+	});
 });

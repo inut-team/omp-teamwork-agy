@@ -190,6 +190,9 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 		normalized === "teamwork" ||
 		normalized === "teamwork-preview" ||
 		normalized === "teamwork-preview-orchestrator" ||
+		normalized === "teamwork-preview-pipeline" ||
+		normalized === "teamwork-preview-conductor" ||
+		normalized === "teamwork-preview-proof" ||
 		normalized === "orchestrator" ||
 		normalized === "boost" ||
 		normalized === "boots" ||

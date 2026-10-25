@@ -130,6 +130,9 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "teamwork_preview_spec_miner")?.name).toBe("teamwork-spec-miner");
 		expect(getAgent(agents, "spec-miner")?.name).toBe("teamwork-spec-miner");
 		expect(getAgent(agents, "specification-miner")?.name).toBe("teamwork-spec-miner");
+		expect(getAgent(agents, "teamwork_preview_pipeline")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "teamwork_preview_conductor")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "teamwork_preview_proof")?.name).toBe("teamwork-orchestrator");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -162,11 +165,15 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		if (result && "prompt" in result) {
 			expect(result.prompt).toContain("<TEAMWORK>");
 			expect(result.prompt).toContain("DISPATCH-ONLY");
-			expect(result.prompt).toContain("Scope Interview (AGY Parity)");
+			expect(result.prompt).toContain("Scope Interview (AGY 1.4.7 Parity)");
+			expect(result.prompt).toContain("Behavioral Integrity Mode Question");
+			expect(result.prompt).toContain("Specify What, Not How");
+			expect(result.prompt).toContain("Verification as a Forcing Function & Verification Resources");
 			expect(result.prompt).toContain(".agents/SCOPE.md");
+			expect(result.prompt).toContain(".agents/prompt_draft.md");
 			expect(result.prompt).toContain("Routing Decision Table");
+			expect(result.prompt).toContain("Math / Proof Pipeline");
 			expect(result.prompt).toContain("SWE Light");
-			expect(result.prompt).toContain("Pre-Flight Dependency Audit");
 			expect(result.prompt).toContain("=== VICTORY AUDIT REPORT ===");
 			expect(result.prompt).toContain("xây dựng search engine");
 		} else {
