@@ -32,6 +32,9 @@ import teamworkDeepcoderMd from "../prompts/agents/teamwork-deepcoder.md" with {
 import teamworkDeepinvestigatorMd from "../prompts/agents/teamwork-deepinvestigator.md" with { type: "text" };
 import teamworkTestWriterMd from "../prompts/agents/teamwork-test-writer.md" with { type: "text" };
 import teamworkSpecMinerMd from "../prompts/agents/teamwork-spec-miner.md" with { type: "text" };
+import teamworkInterviewerMd from "../prompts/agents/teamwork-interviewer.md" with { type: "text" };
+import teamworkSurgicalReviserMd from "../prompts/agents/teamwork-surgical-reviser.md" with { type: "text" };
+import teamworkKnowledgeCuratorMd from "../prompts/agents/teamwork-knowledge-curator.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -110,6 +113,9 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-deepinvestigator.md", template: teamworkDeepinvestigatorMd },
 	{ fileName: "teamwork-test-writer.md", template: teamworkTestWriterMd },
 	{ fileName: "teamwork-spec-miner.md", template: teamworkSpecMinerMd },
+	{ fileName: "teamwork-interviewer.md", template: teamworkInterviewerMd },
+	{ fileName: "teamwork-surgical-reviser.md", template: teamworkSurgicalReviserMd },
+	{ fileName: "teamwork-knowledge-curator.md", template: teamworkKnowledgeCuratorMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.

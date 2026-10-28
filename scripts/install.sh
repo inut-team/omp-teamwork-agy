@@ -12,13 +12,12 @@ set -e
 
 REPO="${OMP_REPO:-inut-team/omp-teamwork-agy}"
 INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
-MIN_BUN_VERSION="1.3.14"
+MIN_BUN_VERSION="1.4.4"
 if ! command -v curl >/dev/null 2>&1; then
     echo "Error: 'curl' is required to run the OMP installer."
     echo "Please install curl using your package manager and try again."
     exit 1
 fi
-
 
 # Parse arguments
 MODE="binary"

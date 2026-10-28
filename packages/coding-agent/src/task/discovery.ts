@@ -193,6 +193,11 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 		normalized === "teamwork-preview-pipeline" ||
 		normalized === "teamwork-preview-conductor" ||
 		normalized === "teamwork-preview-proof" ||
+		normalized === "teamwork-pipeline" ||
+		normalized === "teamwork-conductor" ||
+		normalized === "teamwork-proof" ||
+		normalized === "swarm-orchestrator" ||
+		normalized === "stellar-orchestrator" ||
 		normalized === "orchestrator" ||
 		normalized === "boost" ||
 		normalized === "boots" ||
@@ -332,6 +337,31 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 		normalized === "specification-miner"
 	) {
 		return agents.find(a => a.name === "teamwork-spec-miner");
+	}
+	if (
+		normalized === "teamwork-interviewer" ||
+		normalized === "teamwork-preview-interviewer" ||
+		normalized === "interviewer"
+	) {
+		return agents.find(a => a.name === "teamwork-interviewer");
+	}
+	if (
+		normalized === "teamwork-surgical-reviser" ||
+		normalized === "teamwork-preview-surgical-reviser" ||
+		normalized === "surgical-reviser" ||
+		normalized === "teamwork-patcher" ||
+		normalized === "patcher"
+	) {
+		return agents.find(a => a.name === "teamwork-surgical-reviser");
+	}
+	if (
+		normalized === "teamwork-knowledge-curator" ||
+		normalized === "teamwork-preview-knowledge-curator" ||
+		normalized === "knowledge-curator" ||
+		normalized === "teamwork-curator" ||
+		normalized === "curator"
+	) {
+		return agents.find(a => a.name === "teamwork-knowledge-curator");
 	}
 	return undefined;
 }

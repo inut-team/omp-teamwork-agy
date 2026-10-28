@@ -35,11 +35,14 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(agentNames).toContain("teamwork-document-reviewer");
 		expect(agentNames).toContain("teamwork-document-victory-auditor");
 
-		// DeepMind & Dual-Track Parity Agents
+		// DeepMind & Dual-Track Parity Agents (including AGY 1.4.9 Interviewer, Surgical Reviser & Knowledge Curator)
 		expect(agentNames).toContain("teamwork-deepcoder");
 		expect(agentNames).toContain("teamwork-deepinvestigator");
 		expect(agentNames).toContain("teamwork-test-writer");
 		expect(agentNames).toContain("teamwork-spec-miner");
+		expect(agentNames).toContain("teamwork-interviewer");
+		expect(agentNames).toContain("teamwork-surgical-reviser");
+		expect(agentNames).toContain("teamwork-knowledge-curator");
 	});
 
 	it("resolves teamwork agent aliases correctly", () => {
@@ -133,6 +136,23 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "teamwork_preview_pipeline")?.name).toBe("teamwork-orchestrator");
 		expect(getAgent(agents, "teamwork_preview_conductor")?.name).toBe("teamwork-orchestrator");
 		expect(getAgent(agents, "teamwork_preview_proof")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "teamwork_pipeline")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "teamwork_proof")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "swarm_orchestrator")?.name).toBe("teamwork-orchestrator");
+		expect(getAgent(agents, "stellar_orchestrator")?.name).toBe("teamwork-orchestrator");
+
+		// AGY 1.4.9 Interviewer, Surgical Reviser & Knowledge Curator aliases
+		expect(getAgent(agents, "teamwork-interviewer")?.name).toBe("teamwork-interviewer");
+		expect(getAgent(agents, "teamwork_interviewer")?.name).toBe("teamwork-interviewer");
+		expect(getAgent(agents, "interviewer")?.name).toBe("teamwork-interviewer");
+		expect(getAgent(agents, "teamwork-surgical-reviser")?.name).toBe("teamwork-surgical-reviser");
+		expect(getAgent(agents, "surgical_reviser")?.name).toBe("teamwork-surgical-reviser");
+		expect(getAgent(agents, "teamwork_patcher")?.name).toBe("teamwork-surgical-reviser");
+		expect(getAgent(agents, "patcher")?.name).toBe("teamwork-surgical-reviser");
+		expect(getAgent(agents, "teamwork-knowledge-curator")?.name).toBe("teamwork-knowledge-curator");
+		expect(getAgent(agents, "knowledge_curator")?.name).toBe("teamwork-knowledge-curator");
+		expect(getAgent(agents, "teamwork_curator")?.name).toBe("teamwork-knowledge-curator");
+		expect(getAgent(agents, "curator")?.name).toBe("teamwork-knowledge-curator");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -165,13 +185,17 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		if (result && "prompt" in result) {
 			expect(result.prompt).toContain("<TEAMWORK>");
 			expect(result.prompt).toContain("DISPATCH-ONLY");
-			expect(result.prompt).toContain("Scope Interview (AGY 1.4.7 Parity)");
+			expect(result.prompt).toContain("[skip-interview]");
+			expect(result.prompt).toContain("teamwork-interviewer");
+			expect(result.prompt).toContain("BEGIN PROMPT");
+			expect(result.prompt).toContain("END PROMPT");
 			expect(result.prompt).toContain("Behavioral Integrity Mode Question");
 			expect(result.prompt).toContain("Specify What, Not How");
 			expect(result.prompt).toContain("Verification as a Forcing Function & Verification Resources");
 			expect(result.prompt).toContain(".agents/SCOPE.md");
 			expect(result.prompt).toContain(".agents/prompt_draft.md");
 			expect(result.prompt).toContain("Routing Decision Table");
+			expect(result.prompt).toContain("Math / Proof (Large Team)");
 			expect(result.prompt).toContain("Math / Proof Pipeline");
 			expect(result.prompt).toContain("SWE Light");
 			expect(result.prompt).toContain("=== VICTORY AUDIT REPORT ===");
