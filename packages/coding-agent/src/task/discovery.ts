@@ -363,5 +363,8 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	) {
 		return agents.find(a => a.name === "teamwork-knowledge-curator");
 	}
+	if (normalized === "teamwork-awaiter" || normalized === "teamwork-preview-awaiter" || normalized === "awaiter") {
+		return agents.find(a => a.name === "teamwork-awaiter");
+	}
 	return undefined;
 }

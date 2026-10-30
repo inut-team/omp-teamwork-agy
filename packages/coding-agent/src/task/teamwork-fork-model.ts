@@ -1,4 +1,5 @@
-import type { Model } from "@oh-my-pi/pi-ai";
+import { Effort, type Model } from "@oh-my-pi/pi-ai";
+import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeModelPatternList, resolveModelOverride } from "../config/model-resolver";
 import type { AgentSession } from "../session/agent-session";
@@ -196,6 +197,74 @@ For complex tasks or unfamiliar codebases, dispatch \`teamwork-dependency-audito
 - Binary Veto: On VICTORY REJECTED, route the audit report back to the team. NEVER declare completion without VICTORY CONFIRMED.
 </TEAMWORK_FORK_PREVIEW>
 </TEAMWORK>`;
+	const trimmed = work.trim();
+	return trimmed ? `${base}\n\n${trimmed}` : base;
+}
+
+/**
+ * Resolves the model and `multi_agent_reasoning_effort: "xhigh"` (clamped to the
+ * model's highest supported effort <= xhigh, e.g. `xhigh` or `high`) for `/ultra-preview`.
+ * Mirrors OpenAI Codex 0.166.0 `ultra` ("Maximum reasoning with automatic task delegation").
+ */
+export function resolveUltraPreviewModel(session: AgentSession): TeamworkForkModelSelection {
+	const { model, thinkingLevel } = resolveTeamworkForkModel(session);
+	if (!model) {
+		return { model, thinkingLevel: Effort.XHigh };
+	}
+	const clamped = clampThinkingLevelForModel(model, Effort.XHigh);
+	return {
+		model,
+		thinkingLevel: clamped ?? thinkingLevel ?? Effort.High,
+	};
+}
+
+/**
+ * Builds the directive prompt for `/ultra-preview` (`/ultra`), implementing
+ * OpenAI Codex 0.166.0 `Ultra` ("Maximum reasoning with automatic task delegation"):
+ * - `multi_agent_version: "v2"` + `multi_agent_reasoning_effort: "xhigh"`
+ * - Critical Path (local immediate action by `/root`) vs. Sidecar Tasks (parallel subagents)
+ * - Disjoint Write Sets + "Not Alone in the Codebase" rule for workers
+ * - Authoritative Parallel Explorers + Deterministic Awaiter (`teamwork-awaiter`)
+ * - Shared Message Board (`local://ultra-board.md`) & Live IRC (`write agent://<id>`)
+ * - Codex Persistent Mode (close all open loops and verify end-to-end before final answer)
+ */
+export function buildUltraPreviewPrompt(work: string, modelName?: string, effortLabel?: string): string {
+	const metaSuffix =
+		modelName || effortLabel
+			? ` (${[modelName ? `Model: ${modelName}` : "", effortLabel ? `Reasoning Effort: ${effortLabel}` : ""].filter(Boolean).join(", ")})`
+			: "";
+	const base = `<ULTRA>
+The user invoked /ultra-preview (OpenAI Codex 0.166.0 \`ultra\` parity: **"Maximum reasoning with automatic task delegation"**)${metaSuffix}.
+You are \`/root\`, the primary Lead Engineer & Peer-Orchestrator in a \`Multi-Agent V2\` team collaborating to fulfill the user's goals at \`multi_agent_reasoning_effort = "xhigh"\`.
+All agents in the team are equally intelligent and capable, inherit your current model by default (do NOT override \`model\` unless explicitly asked), and share the workspace.
+
+## 1. Critical Path vs. Sidecar Delegation (Codex Multi-Agent V2 Core Law)
+- **Plan Before Spawning**: First, quickly analyze the overall user task and form a succinct high-level plan. Partition the work into two sets:
+  1. **Immediate Critical-Path Blockers**: Tasks that your very next step depends on or that are tightly coupled core logic. **You (\`/root\`) MUST execute the immediate critical-path work locally right now.** NEVER hand off your immediate blocking task to a subagent and then waste time waiting on it.
+  2. **Parallel Sidecar Tasks**: Concrete, bounded subtasks that materially advance the main goal (independent codebase questions, disjoint implementation slices, parallel verification, or long-running process watches) without blocking your immediate next local step. **Spawn subagents for these in parallel via \`task\`** while you immediately work on the critical path locally.
+
+## 2. Built-In Role Archetypes & "Not Alone in the Codebase" Rule
+- **\`scout\` / \`teamwork-explorer\` (\`explorer.toml\` — Fast & Authoritative)**:
+  - Spawn multiple explorers in parallel when you have distinct questions about the codebase that can be answered independently.
+  - **Trust Explorer Results**: Avoid re-reading or re-exploring the same files that an explorer has already covered.
+- **\`task\` / \`teamwork-worker\` / \`teamwork-deepcoder\` (\`worker.toml\` — Disjoint Write Set & Not-Alone Rule)**:
+  - Prefer delegating concrete code-change worker subtasks over read-only analysis when a subagent can make a bounded patch in a clear write scope.
+  - **Explicit File Ownership (Disjoint Write Set)**: Assign each worker an explicit, non-overlapping set of files/modules (e.g., *"Worker 1 owns \`src/auth/*\`, Worker 2 owns \`src/db/*\`"*).
+  - **Mandatory "Not Alone in the Codebase" Directive**: Include this rule in EVERY coding worker task:
+    > *"You are **NOT ALONE in the codebase**. Other agents (and \`/root\`) are making changes in parallel. Do NOT revert, overwrite, or touch edits made by others outside your assigned files; adjust your implementation to accommodate concurrent changes and list all changed file paths in your final answer."*
+- **\`teamwork-awaiter\` (\`awaiter.toml\` — Deterministic Process/Job Watcher @ \`low\` effort)**:
+  - For long-running builds, test suites, benchmarks, or background jobs (\`proc://\`), spawn \`teamwork-awaiter\` to poll/await with exponential backoff until the command reaches a terminal state without modifying any files.
+
+## 3. After You Delegate: Zero Reflex-Waiting & Live Inter-Agent Messaging
+- **Call \`wait\` Very Sparingly**: NEVER call \`wait\` by reflex right after spawning subagents. While subagents run in the background, immediately execute your local critical-path work. Only call \`wait\` when you have finished your local work and are genuinely blocked on a subagent's output for the next critical-path step.
+- **Live Inter-Agent Messaging & Shared Message Board**:
+  - Use \`write agent://<id>\` (or \`write agent://all\`) to send messages or follow-up steering to running subagents without restarting them.
+  - For cross-agent interface contracts, shared findings, or status updates across 3+ agents, maintain the shared message board at \`local://ultra-board.md\` so all agents can read and post updates without collision.
+
+## 4. Persistent Mode & End-to-End Ownership (Codex \`persistent_instructions\` Parity)
+- **Bias Toward Action & Complete Ownership**: Persist until the user's intended goal is 100% handled. Do NOT stop at proposing a plan, acknowledging capability, or delivering a partial solution.
+- **Close All Open Loops**: When delegated coding tasks return, review their diffs, integrate them with your critical-path changes, run the relevant checks/tests (\`bun check\`, \`bun test\`, smoke runs), fix any regressions (or dispatch \`teamwork-surgical-reviser\`), and deliver a self-contained, verified final result.
+</ULTRA>`;
 	const trimmed = work.trim();
 	return trimmed ? `${base}\n\n${trimmed}` : base;
 }

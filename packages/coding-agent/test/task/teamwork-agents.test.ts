@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Effort } from "@oh-my-pi/pi-ai";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +12,8 @@ import {
 import {
 	buildTeamworkForkPreviewPrompt,
 	buildTeamworkForkPrompt,
+	buildUltraPreviewPrompt,
+	resolveUltraPreviewModel,
 } from "@oh-my-pi/pi-coding-agent/task/teamwork-fork-model";
 import { formatTeamworkStatus, inspectTeamworkStatus } from "@oh-my-pi/pi-coding-agent/task/teamwork-status";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
@@ -43,6 +46,7 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(agentNames).toContain("teamwork-interviewer");
 		expect(agentNames).toContain("teamwork-surgical-reviser");
 		expect(agentNames).toContain("teamwork-knowledge-curator");
+		expect(agentNames).toContain("teamwork-awaiter");
 	});
 
 	it("resolves teamwork agent aliases correctly", () => {
@@ -153,6 +157,9 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "knowledge_curator")?.name).toBe("teamwork-knowledge-curator");
 		expect(getAgent(agents, "teamwork_curator")?.name).toBe("teamwork-knowledge-curator");
 		expect(getAgent(agents, "curator")?.name).toBe("teamwork-knowledge-curator");
+		expect(getAgent(agents, "teamwork-awaiter")?.name).toBe("teamwork-awaiter");
+		expect(getAgent(agents, "teamwork_awaiter")?.name).toBe("teamwork-awaiter");
+		expect(getAgent(agents, "awaiter")?.name).toBe("teamwork-awaiter");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -232,6 +239,53 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		const agents = loadBundledAgents();
 		expect(getAgent(agents, "boost")?.name).toBe("teamwork-orchestrator");
 		expect(getAgent(agents, "boots")?.name).toBe("teamwork-orchestrator");
+	});
+
+	it("provides /ultra-preview and /ultra slash command with OpenAI Codex 0.166.0 Ultra Multi-Agent V2 & xhigh reasoning contract", async () => {
+		const cmd = BUILTIN_AGY_COMPAT_SLASH_COMMANDS.find(c => c.name === "ultra-preview");
+		expect(cmd).toBeDefined();
+		expect(cmd?.aliases).toContain("ultra");
+		expect(cmd?.aliases).toContain("codex-ultra");
+
+		if (!cmd || !cmd.handle) {
+			throw new Error("ultra-preview command or handle not found");
+		}
+		const result = await cmd.handle(
+			{
+				name: "ultra-preview",
+				args: "xây dựng hệ thống distributed lock",
+				text: "/ultra-preview xây dựng hệ thống distributed lock",
+			},
+			{} as unknown as SlashCommandRuntime,
+		);
+		expect(result).toBeDefined();
+		if (result && "prompt" in result) {
+			expect(result.prompt).toContain("<ULTRA>");
+			expect(result.prompt).toContain("Maximum reasoning with automatic task delegation");
+			expect(result.prompt).toContain('multi_agent_reasoning_effort = "xhigh"');
+			expect(result.prompt).toContain("Critical Path vs. Sidecar Delegation");
+			expect(result.prompt).toContain("NOT ALONE in the codebase");
+			expect(result.prompt).toContain("teamwork-awaiter");
+			expect(result.prompt).toContain("local://ultra-board.md");
+			expect(result.prompt).toContain("Persistent Mode & End-to-End Ownership");
+			expect(result.prompt).toContain("xây dựng hệ thống distributed lock");
+		} else {
+			throw new Error("Expected prompt result");
+		}
+
+		const expandedUltra = await expandAgyCompatSlashCommand("/ultra refactor database connection pool");
+		expect(expandedUltra).toContain("<ULTRA>");
+		expect(expandedUltra).toContain("refactor database connection pool");
+
+		const withMeta = buildUltraPreviewPrompt("test task", "GPT-6-Astra", "xhigh");
+		expect(withMeta).toContain("(Model: GPT-6-Astra, Reasoning Effort: xhigh)");
+
+		const resolvedNoModel = resolveUltraPreviewModel({
+			model: undefined,
+			configuredThinkingLevel: () => undefined,
+			resolveRoleModelWithThinking: () => ({ model: undefined, thinkingLevel: undefined }),
+		} as never);
+		expect(resolvedNoModel.thinkingLevel).toBe(Effort.XHigh);
 	});
 
 	it("provides /grill-me and /grill slash command matching AGY <GRILL_ME> design-tree interview contract and command stacking", async () => {

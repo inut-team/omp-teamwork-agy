@@ -5,8 +5,10 @@ import { formatTeamworkStatus, inspectTeamworkStatus } from "../task/teamwork-st
 import {
 	buildTeamworkForkPreviewPrompt,
 	buildTeamworkForkPrompt,
+	buildUltraPreviewPrompt,
 	resolveTeamworkForkModel,
 	resolveTeamworkForkPreviewModel,
+	resolveUltraPreviewModel,
 } from "../task/teamwork-fork-model";
 
 export function buildGrillMePrompt(args?: string): string {
@@ -218,6 +220,47 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 			const base = `<BOOST>\nThe user invoked /boost to run the Boost multi-agent orchestrator (agy compatibility & high-throughput autonomous execution).\nYou are the **Boost Lead Orchestrator**.\n\n## Autonomous Execution Directive\n1. **Zero Questionnaire Traps**:\n   - DO NOT trap the user in an interactive survey, questionnaire, or clarification questions. Work autonomously.\n2. **Decompose & Parallel Dispatch (DeepCoder & DeepInvestigator Engine)**:\n   - Rapidly ground yourself: inspect relevant files and state.\n   - For coding/algorithms: dispatch \`teamwork-deepcoder\` (two-layer pipeline: WorkerL0 implementation + ImprovementWorker adversarial refiner).\n   - For complex bugs/forensics: dispatch \`teamwork-deepinvestigator\` for root-cause analysis before editing.\n   - For UI/Frontend tasks: leverage the \`generative-ui\` skill guidelines and tokens (Tailwind, CSS variables, zero micro-text).\n3. **Evidence-First Verification**:\n   - Enforce real test execution and evidence validation (zero mock, zero hallucination).\n4. **Final Synthesis**:\n   - Consolidate all worker findings into a clean, concise result with exact files and verified execution proof.\n</BOOST>`;
 			const prompt = command.args ? `${base}\n\n${command.args.trim()}` : base;
 			return { prompt };
+		},
+	},
+	{
+		name: "ultra-preview",
+		aliases: ["ultra", "codex-ultra"],
+		icon: "rocket",
+		description:
+			"Maximum reasoning (xhigh) with automatic task delegation & Critical-Path/Sidecar execution (Codex 0.166.0 Ultra compat)",
+		inlineHint: "<task description>",
+		allowArgs: true,
+		subcommands: [
+			{
+				name: "fork",
+				description: "Run Ultra mode in a forked session with 100% conversation context (fork_turns=all)",
+			},
+		],
+		handle: async (command, _runtime) => {
+			const trimmed = command.args ? command.args.trim() : "";
+			const work = /^fork(\s.*)?$/i.test(trimmed) ? trimmed.slice(4).trim() : trimmed;
+			return { prompt: buildUltraPreviewPrompt(work) };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const trimmed = command.args ? command.args.trim() : "";
+			const work = /^fork(\s.*)?$/i.test(trimmed) ? trimmed.slice(4).trim() : trimmed;
+			const { model, thinkingLevel } = resolveUltraPreviewModel(runtime.ctx.session);
+			if (
+				model &&
+				(runtime.ctx.session.model?.id !== model.id ||
+					runtime.ctx.session.model?.provider !== model.provider ||
+					runtime.ctx.session.configuredThinkingLevel() !== thinkingLevel)
+			) {
+				await runtime.ctx.switchSessionModel(model, thinkingLevel);
+			}
+			return {
+				prompt: buildUltraPreviewPrompt(
+					work,
+					model?.name ?? model?.id,
+					typeof thinkingLevel === "string" ? thinkingLevel : undefined,
+				),
+			};
 		},
 	},
 ];
