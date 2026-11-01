@@ -385,7 +385,10 @@ export function supportsAntigravityLongDecodeModel(
 		return false;
 	}
 	if (model.provider === "google-antigravity" || model.provider === "google-gemini-cli") {
-		return rawId.includes("gemini");
+		return rawId.includes("gemini") || model.identity?.class === "gemini";
+	}
+	if (model.provider === "apphub" && model.identity?.class === "gemini") {
+		return true;
 	}
 	return rawId.startsWith("ag/gemini-") || rawId.includes("gemini-4-argon") || rawId.includes("gemini-3.8-flash");
 }

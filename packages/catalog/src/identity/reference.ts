@@ -146,6 +146,10 @@ export function getReferenceCandidateIds(modelId: string): string[] {
 			}
 		}
 
+		const strippedContextTier = candidate.replace(/-(?:200k|400k|800k|1m)$/i, "");
+		if (strippedContextTier && strippedContextTier !== candidate) {
+			queue.push(strippedContextTier);
+		}
 		const slashIndex = candidate.lastIndexOf("/");
 		if (slashIndex !== -1) {
 			queue.push(candidate.slice(slashIndex + 1));

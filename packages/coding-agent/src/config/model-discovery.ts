@@ -863,16 +863,23 @@ function extractOpenAIModelsListInputCapabilities(item: {
 	input_modalities?: unknown;
 	architecture?: unknown;
 	metadata?: unknown;
+	capabilities?: unknown;
 }): ("text" | "image")[] | undefined {
 	const architecture = isRecord(item.architecture) ? item.architecture : undefined;
 	const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+	const capabilities = isRecord(item.capabilities) ? item.capabilities : undefined;
 	const modalities = collectModalities([
 		item.input,
 		item.input_modalities,
 		architecture?.input_modalities,
 		metadata?.input_modalities,
 	]);
-	if (modalities.size === 0) return undefined;
+	if (modalities.size === 0) {
+		if (typeof capabilities?.vision === "boolean") {
+			return capabilities.vision ? ["text", "image"] : ["text"];
+		}
+		return undefined;
+	}
 	return modalities.has("image") ? ["text", "image"] : ["text"];
 }
 
@@ -984,6 +991,7 @@ type AdvertisedReasoning =
  */
 function extractAdvertisedReasoning(item: {
 	metadata?: unknown;
+	capabilities?: unknown;
 	supported_reasoning_levels?: unknown;
 	default_reasoning_level?: unknown;
 	reasoning?: unknown;
@@ -991,17 +999,28 @@ function extractAdvertisedReasoning(item: {
 	reasoning_required?: unknown;
 }): AdvertisedReasoning | undefined {
 	const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+	const capabilities = isRecord(item.capabilities) ? item.capabilities : undefined;
 	// codex-lb nests every reasoning field under `metadata`; read the denial from
 	// the same place the ladder below comes from, or a nested `reasoning: false`
 	// would keep the reference dial alive.
-	if ((metadata?.reasoning ?? item.reasoning) === false) return { kind: "none" };
+	if ((metadata?.reasoning ?? item.reasoning ?? capabilities?.reasoning) === false) return { kind: "none" };
 	const raw = metadata?.supported_reasoning_levels ?? item.supported_reasoning_levels;
-	const efforts = extractReasoningLevels(raw);
+	let efforts = extractReasoningLevels(raw);
+	if (efforts === undefined && (metadata?.reasoning ?? item.reasoning ?? capabilities?.reasoning) === true) {
+		const fmt = typeof capabilities?.thinkingFormat === "string" ? capabilities.thinkingFormat : "";
+		efforts =
+			fmt === "gemini-level" || fmt === "gemini-budget"
+				? [Effort.Low, Effort.Medium, Effort.High]
+				: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
+	}
 	if (efforts === undefined) return undefined;
 	const rawDefault = metadata?.default_reasoning_level ?? item.default_reasoning_level;
 	const defaultLevel = advertisedReasoningEffort(rawDefault);
 	const effortMap = extractReasoningEffortMap(metadata?.reasoning_effort_map ?? item.reasoning_effort_map);
-	const requiresEffort = metadata?.reasoning_required ?? item.reasoning_required;
+	const requiresEffort =
+		metadata?.reasoning_required ??
+		item.reasoning_required ??
+		(typeof capabilities?.thinkingCanDisable === "boolean" ? !capabilities.thinkingCanDisable : undefined);
 	return {
 		kind: "ladder",
 		efforts,
@@ -1179,6 +1198,10 @@ export async function discoverOpenAIModelsList(
 				return (await res.json()) as {
 					data?: Array<{
 						id?: string;
+						owned_by?: unknown;
+						primary_model?: unknown;
+						models?: unknown;
+						capabilities?: unknown;
 						max_model_len?: unknown;
 						context_length?: unknown;
 						max_output_tokens?: unknown;
@@ -1211,7 +1234,8 @@ export async function discoverOpenAIModelsList(
 		: await attempt(baseHeaders);
 	const models = payload.data ?? [];
 	const references = getBundledModelReferenceIndex();
-	const specs: ModelSpec<Api>[] = [];
+	const specs: Array<{ spec: ModelSpec<Api>; inheritedIdentity?: Model<Api>["identity"]; hasPrimaryModel?: boolean }> =
+		[];
 	for (const item of models) {
 		const id = item.id;
 		if (!id) continue;
@@ -1226,7 +1250,14 @@ export async function discoverOpenAIModelsList(
 		// reasoning support — flows through when the provider is silent. Local
 		// runtime state and provider-reported values still win; proxy-specific
 		// headers/baseUrl/cost stay local.
-		const reference = resolveModelReference(id, references) as ModelSpec<Api> | undefined;
+		const primaryModelId =
+			typeof item.primary_model === "string" && item.primary_model.trim() !== ""
+				? item.primary_model.trim()
+				: item.owned_by === "combo" && Array.isArray(item.models) && typeof item.models[0] === "string"
+					? item.models[0].trim()
+					: undefined;
+		const reference = ((primaryModelId ? resolveModelReference(primaryModelId, references) : undefined) ??
+			resolveModelReference(id, references)) as ModelSpec<Api> | undefined;
 		const referenceCompat = reference?.compat as OpenAICompat | undefined;
 		// codex-lb and similar registries nest the route's identity beside its
 		// reasoning ladder: `display_name`, `context_window`, `input_modalities`.
@@ -1278,22 +1309,24 @@ export async function discoverOpenAIModelsList(
 			: extractOpenAIModelsListOutputTask(item);
 		if (task) {
 			specs.push({
-				id,
-				name: advertisedName || reference?.name || id,
-				api: task.api,
-				kind: task.kind,
-				provider: providerConfig.provider,
-				baseUrl,
-				reasoning: false,
-				input,
-				supportsTools: false,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				// Embeddings and judges cap their input by context; image jobs
-				// carry no token window. None produces output tokens.
-				contextWindow: task.kind === "image" ? null : reportedContextWindow,
-				maxTokens: null,
-				headers: baseHeaders,
-			} as ModelSpec<Api>);
+				spec: {
+					id,
+					name: advertisedName || reference?.name || id,
+					api: task.api,
+					kind: task.kind,
+					provider: providerConfig.provider,
+					baseUrl,
+					reasoning: false,
+					input,
+					supportsTools: false,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					// Embeddings and judges cap their input by context; image jobs
+					// carry no token window. None produces output tokens.
+					contextWindow: task.kind === "image" ? null : reportedContextWindow,
+					maxTokens: null,
+					headers: baseHeaders,
+				} as ModelSpec<Api>,
+			});
 			continue;
 		}
 		const api =
@@ -1309,7 +1342,7 @@ export async function discoverOpenAIModelsList(
 			? extractAdvertisedReasoning(item)
 			: undefined;
 		const policy = resolveModelPolicy({
-			id,
+			id: primaryModelId ?? id,
 			name: reference?.name ?? id,
 			api,
 			provider: providerConfig.provider,
@@ -1360,12 +1393,28 @@ export async function discoverOpenAIModelsList(
 					: {}),
 			},
 		} as ModelSpec<Api>;
-		specs.push(withAdvertisedEfforts(spec, advertisedReasoning, api === "anthropic-messages"));
+		const resolvedSpec = withAdvertisedEfforts(spec, advertisedReasoning, api === "anthropic-messages");
+		const inheritedIdentity =
+			policy.identity.class !== "unknown" ? policy.identity : (reference as Model<Api> | undefined)?.identity;
+		specs.push({ spec: resolvedSpec, inheritedIdentity, hasPrimaryModel: primaryModelId !== undefined });
 	}
 	// `discovery.type: "litellm"` keeps LiteLLM provider policy under any alias.
-	return providerConfig.discovery.type === "litellm"
-		? specs.map(spec => buildDiscoveredModel(spec, "litellm"))
-		: specs.map(spec => buildModel(spec));
+	return specs.map(({ spec, inheritedIdentity, hasPrimaryModel }) => {
+		const built =
+			providerConfig.discovery.type === "litellm" ? buildDiscoveredModel(spec, "litellm") : buildModel(spec);
+		if (
+			inheritedIdentity &&
+			inheritedIdentity.class !== "unknown" &&
+			(built.identity.class === "unknown" || hasPrimaryModel)
+		) {
+			return {
+				...built,
+				identity: inheritedIdentity,
+				requiresGlyphTokenization: inheritedIdentity.class === "anthropic",
+			};
+		}
+		return built;
+	});
 }
 
 export async function discoverLiteLLMModels(
