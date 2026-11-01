@@ -16,6 +16,8 @@ import {
 	resolveUltraPreviewModel,
 } from "@oh-my-pi/pi-coding-agent/task/teamwork-fork-model";
 import { formatTeamworkStatus, inspectTeamworkStatus } from "@oh-my-pi/pi-coding-agent/task/teamwork-status";
+import { discoverOpenAIModelsList } from "@oh-my-pi/pi-coding-agent/config/model-discovery";
+import { saveGeneratedImages } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 describe("Teamwork Agents & Slash Command Integration", () => {
 	it("bundles all 14 teamwork agent definitions (including DeepCoder & DeepInvestigator)", () => {
@@ -324,12 +326,75 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(expandedBrowser).toContain("annotate: true");
 		expect(expandedBrowser).toContain("http://localhost:5173 kiểm tra responsive");
 
+		const expandedDirectBrowser = await expandAgyCompatSlashCommand("/browser http://localhost:3000 check mobile");
+		expect(expandedDirectBrowser).toContain("<BROWSER_AGENT>");
+		expect(expandedDirectBrowser).toContain("http://localhost:3000 check mobile");
+		expect(await expandAgyCompatSlashCommand("/browser visible")).toBe("/browser visible");
+		expect(await expandAgyCompatSlashCommand("/browser")).toBe("/browser");
 		const agents = loadBundledAgents();
 		const imgAgent = getAgent(agents, "image-generator");
 		expect(imgAgent?.tools).toContain("generate_image");
 		const uiAgent = getAgent(agents, "ui-designer");
+		expect(imgAgent?.model).toEqual(["@vision", "@default"]);
 		expect(uiAgent?.tools).toContain("generate_image");
 		expect(uiAgent?.spawns).toEqual(expect.arrayContaining(["teamwork-image-generator", "teamwork-browser"]));
+	});
+
+	it("transcodes saveGeneratedImages output_path container format to match requested .png and .webp extensions", async () => {
+		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-image-transcode-"));
+		try {
+			const seedPng = Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+				"base64",
+			);
+			const jpegBytes = await new Bun.Image(seedPng)
+				.resize(8, 8, { filter: "nearest" })
+				.jpeg({ quality: 90 })
+				.bytes();
+			const jpegPayload = [{ data: Buffer.from(jpegBytes).toString("base64"), mimeType: "image/jpeg" }];
+
+			const pngSaved = await saveGeneratedImages(jpegPayload, tmpDir, "assets/hero.png");
+			expect(pngSaved.imagePaths).toEqual([path.join(tmpDir, "assets/hero.png")]);
+			expect(pngSaved.images[0]?.mimeType).toBe("image/png");
+			const pngMeta = await new Bun.Image(await fs.readFile(pngSaved.imagePaths[0]!)).metadata();
+			expect(pngMeta.format).toBe("png");
+			expect([pngMeta.width, pngMeta.height]).toEqual([8, 8]);
+
+			const webpSaved = await saveGeneratedImages(jpegPayload, tmpDir, "assets/card.webp");
+			expect(webpSaved.images[0]?.mimeType).toBe("image/webp");
+			const webpMeta = await new Bun.Image(await fs.readFile(webpSaved.imagePaths[0]!)).metadata();
+			expect(webpMeta.format).toBe("webp");
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("inherits KDL image input modality for silent gateway multimodal IDs while honoring explicit text-only declarations", async () => {
+		const discovered = await discoverOpenAIModelsList(
+			{
+				provider: "apphub",
+				baseUrl: "http://127.0.0.1:20128/v1",
+				api: "openai-completions",
+				discovery: { type: "openai-models-list" },
+			},
+			{
+				fetch: (async () =>
+					new Response(
+						JSON.stringify({
+							data: [
+								{ id: "ag/gemini-4-argon-400k", context_length: 400_000 },
+								{ id: "ag/gemini-4-argon-text-only", context_length: 400_000, input_modalities: ["text"] },
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					)) as unknown as typeof fetch,
+				getBearerApiKeyResolver: async () => undefined,
+			},
+		);
+		const multimodal = discovered.find(m => m.id === "ag/gemini-4-argon-400k");
+		const textOnly = discovered.find(m => m.id === "ag/gemini-4-argon-text-only");
+		expect(multimodal?.input).toEqual(["text", "image"]);
+		expect(textOnly?.input).toEqual(["text"]);
 	});
 
 	it("provides /grill-me and /grill slash command matching AGY <GRILL_ME> design-tree interview contract and command stacking", async () => {

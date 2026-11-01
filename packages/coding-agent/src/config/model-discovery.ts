@@ -33,6 +33,7 @@ import {
 	runnerApiKind,
 } from "@oh-my-pi/pi-catalog/types";
 import { Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import { parseServiceTierIds } from "@oh-my-pi/pi-catalog/utils";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ProviderDiscovery } from "./models-config-schema";
 
@@ -1221,6 +1222,7 @@ export async function discoverOpenAIModelsList(
 						reasoning?: unknown;
 						reasoning_effort_map?: unknown;
 						reasoning_required?: unknown;
+						service_tiers?: unknown;
 					}>;
 				};
 			}),
@@ -1263,9 +1265,8 @@ export async function discoverOpenAIModelsList(
 		// reasoning ladder: `display_name`, `context_window`, `input_modalities`.
 		const metadata = isRecord(item.metadata) ? item.metadata : undefined;
 		const advertisedName = typeof metadata?.display_name === "string" ? metadata.display_name.trim() : "";
-		const input = nativeMetadataForModel?.input ??
-			extractOpenAIModelsListInputCapabilities(item) ??
-			reference?.input ?? ["text"];
+		const explicitInput = nativeMetadataForModel?.input ?? extractOpenAIModelsListInputCapabilities(item);
+		const input = explicitInput ?? reference?.input ?? ["text"];
 		const limits = isRecord(item.limits) ? item.limits : undefined;
 		const maxInputTokens = toTokenLimitOrUndefined(limits?.max_input_tokens);
 		const maxOutputTokens = toTokenLimitOrUndefined(limits?.max_output_tokens);
@@ -1357,6 +1358,10 @@ export async function discoverOpenAIModelsList(
 			),
 		});
 		const policyCompat = policy.compat as OpenAICompat | undefined;
+		// Relays in front of the Codex backend republish its per-model tier list
+		// (bare ids or codex-rs `{ id }` objects; codex-lb nests it under
+		// `metadata`). It is what lets Ultrafast reach an advertising relay row.
+		const serviceTiers = parseServiceTierIds(metadata?.service_tiers ?? item.service_tiers);
 		const spec = {
 			id,
 			name: advertisedName || reference?.name || id,
@@ -1366,7 +1371,12 @@ export async function discoverOpenAIModelsList(
 			baseUrl,
 			reasoning: reference?.reasoning === true || policy.thinking !== undefined,
 			thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider) ?? policy.thinking,
-			input,
+			input:
+				explicitInput ??
+				reference?.input ??
+				(Array.isArray(policy.catalog.inputModalities)
+					? (policy.catalog.inputModalities as ("text" | "image")[])
+					: input),
 			...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 			// Proxy/gateway pricing is provider-specific and rarely matches
 			// upstream bundled catalogs, so keep costs local-unknown even
@@ -1381,6 +1391,7 @@ export async function discoverOpenAIModelsList(
 				contextWindow,
 			),
 			headers: baseHeaders,
+			...(serviceTiers !== undefined ? { serviceTiers } : {}),
 			compat: {
 				supportsStore: false,
 				supportsDeveloperRole: false,

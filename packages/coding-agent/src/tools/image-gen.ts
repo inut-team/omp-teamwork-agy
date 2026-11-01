@@ -131,28 +131,72 @@ function imageExtension(mimeType: string): string {
 	return extensions[mimeType] ?? "png";
 }
 
-async function saveGeneratedImages(
+function targetFormatForExtension(ext: string): { format: "png" | "jpeg" | "webp"; mimeType: string } | undefined {
+	switch (ext.toLowerCase()) {
+		case ".png":
+			return { format: "png", mimeType: "image/png" };
+		case ".jpg":
+		case ".jpeg":
+			return { format: "jpeg", mimeType: "image/jpeg" };
+		case ".webp":
+			return { format: "webp", mimeType: "image/webp" };
+		default:
+			return undefined;
+	}
+}
+
+export async function saveGeneratedImages(
 	images: ImageGenerationResult["images"],
 	cwd: string,
 	outputPath?: string,
-): Promise<string[]> {
+): Promise<{ imagePaths: string[]; images: ImageGenerationResult["images"] }> {
 	const trimmedOutput = outputPath?.trim();
-	return Promise.all(
+	const saved = await Promise.all(
 		images.map(async (image, index) => {
+			const rawBytes = Buffer.from(image.data, "base64");
+			let detectedFormat: string | undefined;
+			try {
+				const meta = await new Bun.Image(rawBytes).metadata();
+				detectedFormat = meta.format;
+			} catch {
+				// Non-raster or synthetic test fixture bytes: keep declared mimeType/bytes as-is.
+			}
+			const sourceMime = detectedFormat ? `image/${detectedFormat}` : image.mimeType;
 			let filepath: string;
+			let outBytes: Uint8Array = rawBytes;
+			let outMime = sourceMime;
 			if (trimmedOutput) {
 				const resolved = resolveToCwd(trimmedOutput, cwd);
 				const ext = path.extname(resolved);
-				const effectiveExt = ext || `.${imageExtension(image.mimeType)}`;
+				const effectiveExt = ext || `.${imageExtension(sourceMime)}`;
 				const stem = ext ? resolved.slice(0, -ext.length) : resolved;
 				filepath = index === 0 ? `${stem}${effectiveExt}` : `${stem}-${index + 1}${effectiveExt}`;
+				const target = ext ? targetFormatForExtension(ext) : undefined;
+				if (target && detectedFormat && detectedFormat !== target.format) {
+					if (target.format === "png") {
+						outBytes = await new Bun.Image(rawBytes).png().bytes();
+					} else if (target.format === "jpeg") {
+						outBytes = await new Bun.Image(rawBytes).jpeg({ quality: 92 }).bytes();
+					} else {
+						outBytes = await new Bun.Image(rawBytes).webp({ quality: 90 }).bytes();
+					}
+					outMime = target.mimeType;
+				}
 			} else {
-				filepath = path.join(os.tmpdir(), `omp-image-${Snowflake.next()}.${imageExtension(image.mimeType)}`);
+				filepath = path.join(os.tmpdir(), `omp-image-${Snowflake.next()}.${imageExtension(sourceMime)}`);
 			}
-			await Bun.write(filepath, Buffer.from(image.data, "base64"));
-			return filepath;
+			await Bun.write(filepath, outBytes);
+			const updatedImage =
+				outBytes === rawBytes && outMime === image.mimeType
+					? image
+					: { ...image, data: Buffer.from(outBytes).toString("base64"), mimeType: outMime };
+			return { filepath, image: updatedImage };
 		}),
 	);
+	return {
+		imagePaths: saved.map(entry => entry.filepath),
+		images: saved.map(entry => entry.image),
+	};
 }
 
 /**
@@ -212,7 +256,7 @@ async function buildToolResult(
 	cwd: string,
 	outputPath?: string,
 ): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
-	const imagePaths = await saveGeneratedImages(result.images, cwd, outputPath);
+	const { imagePaths, images: savedImages } = await saveGeneratedImages(result.images, cwd, outputPath);
 	// Hosted backends may run a different model than the selected catalog entry; report what actually ran.
 	const ranModel = result.model ?? model.id;
 	if (imagePaths.length === 0) {
@@ -233,7 +277,7 @@ async function buildToolResult(
 		ranModel === model.id ? `Model: ${ranModel}` : `Model: ${ranModel} (catalog entry ${model.provider}/${model.id})`;
 	const lines = [`Provider: ${model.provider}`, modelLine, `Generated ${imagePaths.length} image(s):`];
 	for (const [index, imagePath] of imagePaths.entries()) {
-		const { size, quality } = result.images[index] ?? {};
+		const { size, quality } = savedImages[index] ?? {};
 		const meta = [size, quality && `quality ${quality}`].filter(Boolean).join(", ");
 		lines.push(meta ? `  ${imagePath} (${meta})` : `  ${imagePath}`);
 	}
@@ -243,9 +287,9 @@ async function buildToolResult(
 		details: {
 			provider: model.provider,
 			model: ranModel,
-			imageCount: result.images.length,
+			imageCount: savedImages.length,
 			imagePaths,
-			images: result.images,
+			images: savedImages,
 			responseText: result.text,
 			usage: result.usage,
 		},

@@ -315,6 +315,18 @@ const AGY_COMPAT_COMMAND_BY_NAME: Record<string, SlashCommandSpec> = Object.from
 	]),
 );
 
+const BROWSER_TASK_ARG_PATTERN = /\s|^https?:\/\/|^localhost\b|^127\.0\.0\.1\b|^file:\/\//i;
+
+/** Whether `/browser <args>` describes a URL or multi-word task rather than a `headless`/`visible` mode toggle. */
+export function isBrowserTaskArg(args: string): boolean {
+	const trimmed = args.trim();
+	if (!trimmed) return false;
+	const lower = trimmed.toLowerCase();
+	if (lower === "headless" || lower === "hidden" || lower === "visible" || lower === "show" || lower === "headful") {
+		return false;
+	}
+	return BROWSER_TASK_ARG_PATTERN.test(trimmed);
+}
 /**
  * Expand a leading AGY-compat slash command (such as `/grill-me`, `/boost`,
  * `/teamwork-preview`, `/learn`) when submitted via headless `omp -p` or
@@ -328,6 +340,9 @@ export async function expandAgyCompatSlashCommand(text: string, cwd?: string): P
 	const firstWs = body.search(/\s/);
 	const name = firstWs === -1 ? body : body.slice(0, firstWs);
 	const args = firstWs === -1 ? "" : body.slice(firstWs + 1).trim();
+	if (name === "browser" && isBrowserTaskArg(args)) {
+		return buildBrowserAgentPrompt(args);
+	}
 	const spec = Object.hasOwn(AGY_COMPAT_COMMAND_BY_NAME, name) ? AGY_COMPAT_COMMAND_BY_NAME[name] : undefined;
 	if (!spec?.handle) return text;
 	const result = await spec.handle({ name, args, text: trimmed }, { cwd: cwd ?? process.cwd() } as Parameters<

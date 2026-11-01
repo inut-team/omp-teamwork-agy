@@ -23,20 +23,15 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
 </critical>
 
 <workflow>
-1. **Launch or Attach**:
-   - If the target is a local dev server that is not running yet and a start command was supplied, verify/check port readiness first; otherwise open the target URL via `eval` (`language: "js"`):
-     ```js
-     const tab = await browser.open({ name: "ui-qa", url: TARGET_URL, viewport: { width: 1440, height: 900 } });
-     ```
-2. **Interactive HUD Perception & Actuation**:
-   - Run `const obs = await tab.observe()` and `await tab.screenshot({ annotate: true })` to inspect numbered interactive elements (`tab.id(n)` / `tab.ref(...)`) alongside live visual rendering.
-   - Wait on concrete conditions (`waitForSelector`, `waitForText`, `waitForUrl`), NEVER fixed sleeps.
-   - Cap batch loops to `<= 20` click/fill actions per `eval` step; re-observe after navigation or state re-renders.
+1. **Batched Execution First (`<= 2` `eval` Cells for Standard UI QA, `< 60s` Target)**:
+   - NEVER issue 10+ fragmented single-expression `eval` round-trips for one page. Combine `browser.open(...)`, Desktop (`1440x900`) `observe()` + `screenshot({ annotate: true })` + `a11y()` + overflow/image checks, interactive click/tab/filter probes, Mobile (`390x844`) `emulate()` + `screenshot({ annotate: true })` + `a11y()`, and `errors()` + `console()` + failed `requests()` into **1–2 comprehensive `eval` (`language: "js"`) cells** wrapped in `try { ... } finally { await tab.close(); }`.
+   - Wait on concrete conditions (`waitForSelector`, `waitForText`, `waitForUrl`), NEVER fixed sleeps. Cap batch loops to `<= 20` click/fill actions per `eval` step; re-observe after navigation or state re-renders.
    - Motion/interaction showcase requested? Record `.webm` video with `await tab.recordStart(outputPath)` ... `await tab.recordStop()`.
+2. **Vision Role Fallback When Inline Screenshots Are Omitted**:
+   - If `eval` output reports `[image omitted: the active model does not support image input]`, write the screenshot bytes as a PNG file (`await Bun.write("/tmp/omp-hud-check.png", await new Bun.Image(shot).png().bytes())`), inspect it via `read("/tmp/omp-hud-check.png?q=Check layout, overlap, clipping, contrast, and HUD alignment")` (which routes pixel inspection through `@vision`), and delete the temporary PNG before yielding.
 3. **Full Responsive & Technical UI Audit (When Verifying Frontend/UI)**:
-   - **Desktop (`1440x900`) & Mobile (`390x844`)**: switch viewport via `await tab.emulate({ viewport: { width: 390, height: 844 } })`, capture `tab.screenshot({ annotate: true, fullPage: true })` on both, and check for horizontal overflow (`document.documentElement.scrollWidth > window.innerWidth`), clipped text, broken images (`img.naturalWidth === 0`), overlapping controls, and contrast defects.
-   - **Accessibility & Runtime Health**: run `await tab.a11y()`, `await tab.errors()`, and `await tab.console()`, plus failed HTTP/asset requests via `await tab.requests()`.
-   - **React / Web Vitals (if applicable)**: collect `await tab.vitals()`.
+   - **Desktop (`1440x900`) & Mobile (`390x844`)**: verify horizontal overflow (`document.documentElement.scrollWidth > window.innerWidth`), clipped text, broken images (`!img.complete || img.naturalWidth === 0`), overlapping controls, and WCAG contrast defects on both viewports.
+   - **Accessibility & Runtime Health**: run `await tab.a11y()`, `await tab.errors()`, `await tab.console()`, and filter `await tab.requests()` for status `>= 400`. Collect `await tab.vitals()` when profiling performance.
 4. **Structured Outcome Report**:
    - Conclude with `STATUS: COMPLETED | DEFECTS_FOUND | BLOCKED`, exact URLs/viewports tested, verified state transitions, and an actionable defect table (`Viewport | Selector/Element | Visual/A11y/Console Defect | Fix Hint`).
 </workflow>
