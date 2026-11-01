@@ -483,6 +483,7 @@ export function mapStopReasonString(reason: string): StopReason {
 		case "STOP":
 			return "stop";
 		case "MAX_TOKENS":
+		case "CONTINUATION":
 			return "length";
 		default:
 			return "error";

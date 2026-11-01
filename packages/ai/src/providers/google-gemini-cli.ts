@@ -18,6 +18,7 @@ import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-
 import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
+	AntigravityLongDecodeMode,
 	AntigravityModelWireProfile,
 	Api,
 	AssistantMessage,
@@ -279,6 +280,8 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 	projectId?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
+	/** Antigravity multi-leg CCPA stream continuation ceiling ("off", "auto", "128k", "256k", "512k", "1m"). */
+	antigravityLongDecode?: AntigravityLongDecodeMode | boolean | number;
 	providerSessionState?: Map<string, ProviderSessionState>;
 }
 
@@ -333,6 +336,102 @@ const RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 const GOOGLE_GEMINI_REFRESH_SKEW_MS = 60_000;
 const ANTIGRAVITY_REFRESH_SKEW_MS = 60_000;
+const MAX_CONTINUATION_LEGS = 32;
+const MAX_MID_STREAM_RETRIES = 3;
+const MID_STREAM_RETRY_BASE_DELAY_MS = 1000;
+const ANTIGRAVITY_LONG_DECODE_CAPS: Readonly<Record<Exclude<AntigravityLongDecodeMode, "off">, number>> = {
+	auto: 262_144,
+	"128k": 131_072,
+	"256k": 262_144,
+	"512k": 524_288,
+	"1m": 1_048_576,
+};
+
+export function resolveAntigravityLongDecodeMaxTokens(
+	mode?: AntigravityLongDecodeMode | boolean | number,
+	envRaw: string | undefined = process.env.OMP_ANTIGRAVITY_LONG_DECODE,
+): number | undefined {
+	if (typeof mode === "number") {
+		return Number.isFinite(mode) && mode > 65_536 ? Math.min(1_048_576, Math.trunc(mode)) : undefined;
+	}
+	if (typeof mode === "boolean") {
+		return mode ? ANTIGRAVITY_LONG_DECODE_CAPS.auto : undefined;
+	}
+	const raw = (mode ?? envRaw ?? "").trim().toLowerCase();
+	if (!raw || raw === "off" || raw === "0" || raw === "false" || raw === "no") {
+		return undefined;
+	}
+	if (raw === "1" || raw === "true" || raw === "yes" || raw === "on" || raw === "auto") {
+		return ANTIGRAVITY_LONG_DECODE_CAPS.auto;
+	}
+	if (raw in ANTIGRAVITY_LONG_DECODE_CAPS) {
+		return ANTIGRAVITY_LONG_DECODE_CAPS[raw as keyof typeof ANTIGRAVITY_LONG_DECODE_CAPS];
+	}
+	const numeric = Number(raw);
+	if (Number.isFinite(numeric) && numeric > 65_536) {
+		return Math.min(1_048_576, Math.trunc(numeric));
+	}
+	return undefined;
+}
+
+export function supportsAntigravityLongDecodeModel(
+	model: { provider?: string; id?: string; requestModelId?: string; identity?: { class?: string } } | undefined,
+	wireModelId?: string,
+): boolean {
+	if (!model) return false;
+	if (model.identity?.class === "anthropic") return false;
+	const rawId = String(wireModelId ?? model.requestModelId ?? model.id ?? "").toLowerCase();
+	if (!rawId || rawId.includes("claude") || rawId.includes("image") || rawId.includes("imagen")) {
+		return false;
+	}
+	if (model.provider === "google-antigravity" || model.provider === "google-gemini-cli") {
+		return rawId.includes("gemini");
+	}
+	return rawId.startsWith("ag/gemini-") || rawId.includes("gemini-4-argon") || rawId.includes("gemini-3.8-flash");
+}
+
+export function isContinuationBudgetExhaustedError(errorOrMessage: unknown): boolean {
+	const raw =
+		typeof errorOrMessage === "string"
+			? errorOrMessage
+			: errorOrMessage instanceof Error
+				? errorOrMessage.message
+				: String(errorOrMessage ?? "");
+	const lower = raw.toLowerCase();
+	return (
+		(lower.includes("max_output_tokens") && lower.includes("has already been exhausted")) ||
+		lower.includes("the input token count exceeds the maximum number") ||
+		lower.includes("more than the max tokens limit allowed")
+	);
+}
+
+export function cloneCloudCodeAssistRequestWithContinuationToken(
+	base: CloudCodeAssistRequest,
+	continuationToken: string,
+	legIndex = 1,
+): CloudCodeAssistRequest {
+	const nextRequest: CloudCodeAssistRequest["request"] = {
+		...base.request,
+		...(base.request.generationConfig ? { generationConfig: { ...base.request.generationConfig } } : {}),
+		continuationToken,
+	};
+	const baseRequestId = base.requestId;
+	let nextRequestId: string | undefined;
+	if (baseRequestId) {
+		const parts = baseRequestId.split("/");
+		if (parts.length === 5 && parts[0] === "agent") {
+			parts[2] = String(Date.now());
+			nextRequestId = parts.join("/");
+		} else {
+			nextRequestId = `${baseRequestId}-leg-${legIndex}`;
+		}
+	}
+	return {
+		...base,
+		...(nextRequestId !== undefined ? { requestId: nextRequestId } : {}),
+		request: nextRequest,
+	};
+}
 
 const optionalCredentialString = type("unknown").pipe(raw => {
 	const out = type("string")(raw);
@@ -426,6 +525,7 @@ interface CloudCodeAssistRequest {
 	model: string;
 	request: {
 		contents: Content[];
+		continuationToken?: string;
 		sessionId?: string;
 		systemInstruction?: { role?: string; parts: { text: string }[] };
 		generationConfig?: {
@@ -467,6 +567,7 @@ interface CloudCodeAssistResponseChunk {
 				}>;
 			};
 			finishReason?: string;
+			continuationToken?: string;
 		}>;
 		usageMetadata?: {
 			promptTokenCount?: number;
@@ -674,6 +775,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 			const streamResponse = async (
 				activeResponse: Response,
+				continuationEndpointUrl?: string,
 			): Promise<{ meaningful: boolean; strippedPlanningLeak: boolean }> => {
 				if (!activeResponse.body) {
 					throw new AIError.ProviderResponseError("No response body", {
@@ -777,152 +879,360 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 				};
 
-				const responseAbortController = new AbortController();
-				const responseSignal = options?.signal
-					? AbortSignal.any([options.signal, responseAbortController.signal])
-					: responseAbortController.signal;
+				const targetEndpointUrl =
+					continuationEndpointUrl ||
+					activeResponse.url ||
+					`${endpoints[0]}/v1internal:streamGenerateContent?alt=sse`;
+				const targetMaxOutputTokens = requestBody.request.generationConfig?.maxOutputTokens ?? 65_536;
 				const onSseEvent = options?.onSseEvent;
-				const chunks = iterateWithIdleTimeout(
-					// Attach the observer only when a diagnostic listener exists: any
-					// observer turns on per-line raw capture in `readSseJson`.
-					readSseJson<CloudCodeAssistResponseChunk>(
-						activeResponse.body,
-						responseSignal,
-						onSseEvent
-							? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model)
-							: undefined,
-					),
-					{
-						firstItemTimeoutMs: firstEventTimeoutMs,
-						errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-						firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-						onFirstItemTimeout: () =>
-							responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
-						abortSignal: options?.signal,
-					},
-				);
-				for await (const chunk of chunks) {
-					if (chunk.error) {
-						const detail =
-							chunk.error.message && chunk.error.status
-								? `${chunk.error.message} (${chunk.error.status})`
-								: chunk.error.message || chunk.error.status || "unknown error";
-						const residue =
-							Array.isArray(chunk.error.details) && chunk.error.details.length > 0
-								? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
-								: "";
-						const message = `Cloud Code Assist stream error: ${detail}${residue}`;
-						throw typeof chunk.error.code === "number" && chunk.error.code >= 400
-							? new AIError.GeminiCliApiError(message, chunk.error.code)
-							: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "runtime" });
+
+				let currentLegResponse = activeResponse;
+				let legIndex = 0;
+				let midStreamRetries = 0;
+				let latestContinuationToken: string | undefined;
+				let initialInputTokens: number | undefined;
+				let initialCacheReadTokens: number | undefined;
+				let committedOutputTokens = 0;
+				let committedThinkingTokens = 0;
+
+				const isRetriableMidStreamError = (err: unknown): boolean => {
+					if (options?.signal?.aborted || err instanceof AIError.AbortError) return false;
+					if (err instanceof AIError.ProviderResponseError && err.kind === "content-blocked") return false;
+					const status = extractHttpStatusFromError(err);
+					if (status === 401 || status === 403 || status === 429) return false;
+					if (status !== undefined && status >= 400 && status < 500) return false;
+					return true;
+				};
+
+				const dialNextContinuationLeg = async (token: string, nextLegIdx: number): Promise<Response | null> => {
+					while (true) {
+						if (options?.signal?.aborted) {
+							throw new AIError.AbortError("Request was aborted");
+						}
+						const legPayload = cloneCloudCodeAssistRequestWithContinuationToken(requestBody, token, nextLegIdx);
+						const legWatchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
+						let nextResp: Response;
+						try {
+							nextResp = await (options?.fetch ?? fetch)(targetEndpointUrl, {
+								method: "POST",
+								headers: requestHeaders,
+								body: JSON.stringify(legPayload),
+								signal: legWatchdog.signal,
+							});
+						} catch (dialErr) {
+							legWatchdog.clear();
+							if (midStreamRetries < MAX_MID_STREAM_RETRIES && isRetriableMidStreamError(dialErr)) {
+								midStreamRetries += 1;
+								const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
+								await scheduler.wait(delayMs, { signal: options?.signal });
+								continue;
+							}
+							throw dialErr;
+						} finally {
+							legWatchdog.clear();
+						}
+
+						if (!nextResp.ok) {
+							const errText = await nextResp.text();
+							if (isContinuationBudgetExhaustedError(errText)) {
+								return null;
+							}
+							const apiErr = new AIError.GeminiCliApiError(
+								`Cloud Code Assist API error (${nextResp.status}): ${errText}`,
+								nextResp.status,
+								{ headers: nextResp.headers },
+							);
+							if (midStreamRetries < MAX_MID_STREAM_RETRIES && isRetriableMidStreamError(apiErr)) {
+								midStreamRetries += 1;
+								const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
+								await scheduler.wait(delayMs, { signal: options?.signal });
+								continue;
+							}
+							throw apiErr;
+						}
+
+						return nextResp;
 					}
-					const responseData = chunk.response;
-					if (!responseData) continue;
-					if (responseData.responseId) lastResponseId = responseData.responseId;
-					if (!responseData.candidates?.length && responseData.promptFeedback?.blockReason) {
-						const detail = responseData.promptFeedback.blockReasonMessage;
-						throw new AIError.ProviderResponseError(
-							`Request blocked by Google (${responseData.promptFeedback.blockReason})${detail ? `: ${detail}` : ""}`,
-							{ provider: model.provider, kind: "content-blocked" },
-						);
+				};
+
+				while (true) {
+					if (!currentLegResponse.body) {
+						throw new AIError.ProviderResponseError("No response body", {
+							provider: model.provider,
+							kind: "empty-body",
+						});
 					}
 
-					const candidate = responseData.candidates?.[0];
-					if (candidate?.content?.parts) {
-						for (const part of candidate.content.parts) {
-							if (part.text !== undefined && part.text !== "") {
-								const isThinking = isThinkingPart(part);
-								if (isThinking) {
-									flushVisibleText();
-									const block = startThinkingBlock();
-									block.thinking += part.text;
-									block.thinkingSignature = retainThoughtSignature(
-										block.thinkingSignature,
-										part.thoughtSignature,
-									);
-									stream.push({
-										type: "thinking_delta",
-										contentIndex: blockIndex(),
-										delta: part.text,
-										partial: output,
-									});
-								} else {
-									if (isBuffering) {
-										textBuffer += part.text;
-										bufferedTextSignature = retainThoughtSignature(
-											bufferedTextSignature,
-											part.thoughtSignature,
-										);
-									} else if (isFlashLeakModel && part.text.trimStart().startsWith("{")) {
-										isBuffering = true;
-										textBuffer = part.text;
-										bufferedTextSignature = part.thoughtSignature;
-									} else {
-										feedVisibleText(part.text, part.thoughtSignature);
+					let legOutputTokens = 0;
+					let legThinkingTokens = 0;
+					let legFinishReason: string | undefined;
+					let legHasToolCall = false;
+					let resumedFromMidStreamError = false;
+
+					const responseAbortController = new AbortController();
+					const responseSignal = options?.signal
+						? AbortSignal.any([options.signal, responseAbortController.signal])
+						: responseAbortController.signal;
+					const chunks = iterateWithIdleTimeout(
+						// Attach the observer only when a diagnostic listener exists: any
+						// observer turns on per-line raw capture in `readSseJson`.
+						readSseJson<CloudCodeAssistResponseChunk>(
+							currentLegResponse.body,
+							responseSignal,
+							onSseEvent
+								? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model)
+								: undefined,
+						),
+						{
+							firstItemTimeoutMs: firstEventTimeoutMs,
+							errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+							firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+							onFirstItemTimeout: () =>
+								responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
+							abortSignal: options?.signal,
+						},
+					);
+
+					try {
+						for await (const chunk of chunks) {
+							if (chunk.error) {
+								const detail =
+									chunk.error.message && chunk.error.status
+										? `${chunk.error.message} (${chunk.error.status})`
+										: chunk.error.message || chunk.error.status || "unknown error";
+								const residue =
+									Array.isArray(chunk.error.details) && chunk.error.details.length > 0
+										? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
+										: "";
+								const message = `Cloud Code Assist stream error: ${detail}${residue}`;
+								throw typeof chunk.error.code === "number" && chunk.error.code >= 400
+									? new AIError.GeminiCliApiError(message, chunk.error.code)
+									: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "runtime" });
+							}
+							const responseData = chunk.response;
+							if (!responseData) continue;
+							if (responseData.responseId) lastResponseId = responseData.responseId;
+							if (!responseData.candidates?.length && responseData.promptFeedback?.blockReason) {
+								const detail = responseData.promptFeedback.blockReasonMessage;
+								throw new AIError.ProviderResponseError(
+									`Request blocked by Google (${responseData.promptFeedback.blockReason})${detail ? `: ${detail}` : ""}`,
+									{ provider: model.provider, kind: "content-blocked" },
+								);
+							}
+
+							const candidate = responseData.candidates?.[0];
+							if (typeof candidate?.continuationToken === "string" && candidate.continuationToken.length > 0) {
+								latestContinuationToken = candidate.continuationToken;
+							}
+							if (candidate?.content?.parts) {
+								for (const part of candidate.content.parts) {
+									if (part.text !== undefined && part.text !== "") {
+										const isThinking = isThinkingPart(part);
+										if (isThinking) {
+											flushVisibleText();
+											const block = startThinkingBlock();
+											block.thinking += part.text;
+											block.thinkingSignature = retainThoughtSignature(
+												block.thinkingSignature,
+												part.thoughtSignature,
+											);
+											stream.push({
+												type: "thinking_delta",
+												contentIndex: blockIndex(),
+												delta: part.text,
+												partial: output,
+											});
+										} else {
+											if (isBuffering) {
+												textBuffer += part.text;
+												bufferedTextSignature = retainThoughtSignature(
+													bufferedTextSignature,
+													part.thoughtSignature,
+												);
+											} else if (isFlashLeakModel && part.text.trimStart().startsWith("{")) {
+												isBuffering = true;
+												textBuffer = part.text;
+												bufferedTextSignature = part.thoughtSignature;
+											} else {
+												feedVisibleText(part.text, part.thoughtSignature);
+											}
+
+											if (isBuffering) {
+												const buffered = consumePlanningBuffer(textBuffer, toolNames);
+												if (buffered.kind !== "incomplete") {
+													if (buffered.kind === "leak") strippedPlanningLeak = true;
+													const visibleSignature = bufferedTextSignature;
+													isBuffering = false;
+													textBuffer = "";
+													bufferedTextSignature = undefined;
+													feedVisibleText(buffered.visibleText, visibleSignature);
+												}
+											}
+										}
+									} else if (part.text === "" && part.thoughtSignature && !part.functionCall) {
+										retainCurrentBlockThoughtSignature(part.thoughtSignature);
 									}
 
-									if (isBuffering) {
-										const buffered = consumePlanningBuffer(textBuffer, toolNames);
-										if (buffered.kind !== "incomplete") {
-											if (buffered.kind === "leak") strippedPlanningLeak = true;
-											const visibleSignature = bufferedTextSignature;
-											isBuffering = false;
-											textBuffer = "";
-											bufferedTextSignature = undefined;
-											feedVisibleText(buffered.visibleText, visibleSignature);
+									if (part.functionCall) {
+										legHasToolCall = true;
+										flushVisibleText();
+										endCurrentBlock();
+										isBuffering = false;
+										textBuffer = "";
+										const providedId = part.functionCall.id;
+										const needsNewId =
+											!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
+										const toolCallId = needsNewId
+											? nextToolCallId(part.functionCall.name || "tool")
+											: providedId;
+
+										const toolCall: ToolCall = {
+											type: "toolCall",
+											id: toolCallId,
+											name: part.functionCall.name || "",
+											arguments: (part.functionCall.args ?? {}) as Record<string, unknown>,
+											...(part.thoughtSignature && { thoughtSignature: part.thoughtSignature }),
+										};
+
+										output.content.push(toolCall);
+										ensureStarted();
+										pushToolCallEvents(toolCall, blockIndex(), output, stream);
+									}
+								}
+							}
+
+							if (candidate?.finishReason) {
+								legFinishReason = candidate.finishReason;
+								if (candidate.finishReason !== "CONTINUATION") {
+									sawFinishReason = true;
+									const mapped = mapStopReasonString(candidate.finishReason);
+									// Only let a trailing tool call upgrade benign finishes; error finishes
+									// (SAFETY, MALFORMED_FUNCTION_CALL, ...) must surface even with tool calls present.
+									if (
+										(mapped === "stop" || mapped === "length") &&
+										output.content.some(b => b.type === "toolCall")
+									) {
+										output.stopReason = "toolUse";
+									} else {
+										output.stopReason = mapped;
+										if (mapped === "error") {
+											output.errorMessage = `Generation failed with finish reason: ${candidate.finishReason}`;
 										}
 									}
 								}
-							} else if (part.text === "" && part.thoughtSignature && !part.functionCall) {
-								retainCurrentBlockThoughtSignature(part.thoughtSignature);
 							}
 
-							if (part.functionCall) {
-								flushVisibleText();
-								endCurrentBlock();
-								isBuffering = false;
-								textBuffer = "";
-								const providedId = part.functionCall.id;
-								const needsNewId =
-									!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
-								const toolCallId = needsNewId ? nextToolCallId(part.functionCall.name || "tool") : providedId;
-
-								const toolCall: ToolCall = {
-									type: "toolCall",
-									id: toolCallId,
-									name: part.functionCall.name || "",
-									arguments: (part.functionCall.args ?? {}) as Record<string, unknown>,
-									...(part.thoughtSignature && { thoughtSignature: part.thoughtSignature }),
+							if (responseData.usageMetadata) {
+								const legUsage = mapGoogleUsage(responseData.usageMetadata);
+								const legThinking = responseData.usageMetadata.thoughtsTokenCount || 0;
+								if (initialInputTokens === undefined) {
+									initialInputTokens = legUsage.input;
+									initialCacheReadTokens = legUsage.cacheRead;
+								}
+								legOutputTokens = legUsage.output;
+								legThinkingTokens = legThinking;
+								const totalOutput = committedOutputTokens + legOutputTokens;
+								const totalThinking = committedThinkingTokens + legThinkingTokens;
+								const inputTokens = initialInputTokens ?? legUsage.input;
+								const cacheReadTokens = initialCacheReadTokens ?? legUsage.cacheRead;
+								output.usage = {
+									input: inputTokens,
+									output: totalOutput,
+									cacheRead: cacheReadTokens,
+									cacheWrite: 0,
+									totalTokens: inputTokens + cacheReadTokens + totalOutput,
+									...(totalThinking > 0 ? { reasoningTokens: totalThinking } : {}),
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 								};
-
-								output.content.push(toolCall);
-								ensureStarted();
-								pushToolCallEvents(toolCall, blockIndex(), output, stream);
+								calculateCost(model, output.usage, output.timestamp);
 							}
 						}
-					}
-
-					if (candidate?.finishReason) {
-						sawFinishReason = true;
-						const mapped = mapStopReasonString(candidate.finishReason);
-						// Only let a trailing tool call upgrade benign finishes; error finishes
-						// (SAFETY, MALFORMED_FUNCTION_CALL, ...) must surface even with tool calls present.
-						if ((mapped === "stop" || mapped === "length") && output.content.some(b => b.type === "toolCall")) {
-							output.stopReason = "toolUse";
+					} catch (legErr) {
+						if (legIndex > 0 && isContinuationBudgetExhaustedError(legErr)) {
+							sawFinishReason = true;
+							output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
+							break;
+						}
+						if (
+							latestContinuationToken &&
+							!legHasToolCall &&
+							midStreamRetries < MAX_MID_STREAM_RETRIES &&
+							isRetriableMidStreamError(legErr)
+						) {
+							midStreamRetries += 1;
+							committedOutputTokens += legOutputTokens;
+							committedThinkingTokens += legThinkingTokens;
+							const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
+							await scheduler.wait(delayMs, { signal: options?.signal });
+							const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
+							if (!nextResp) {
+								sawFinishReason = true;
+								output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
+								break;
+							}
+							legIndex += 1;
+							currentLegResponse = nextResp;
+							resumedFromMidStreamError = true;
 						} else {
-							output.stopReason = mapped;
-							if (mapped === "error") {
-								output.errorMessage = `Generation failed with finish reason: ${candidate.finishReason}`;
-							}
+							throw legErr;
 						}
 					}
 
-					if (responseData.usageMetadata) {
-						output.usage = mapGoogleUsage(responseData.usageMetadata);
-						calculateCost(model, output.usage, output.timestamp);
+					if (resumedFromMidStreamError) {
+						continue;
 					}
-				}
 
+					const totalGeneratedTokens = committedOutputTokens + legOutputTokens;
+					if (legFinishReason === "CONTINUATION") {
+						const canContinue =
+							Boolean(latestContinuationToken) &&
+							!legHasToolCall &&
+							legIndex < MAX_CONTINUATION_LEGS &&
+							totalGeneratedTokens < targetMaxOutputTokens;
+						if (canContinue && latestContinuationToken) {
+							committedOutputTokens += legOutputTokens;
+							committedThinkingTokens += legThinkingTokens;
+							midStreamRetries = 0;
+							const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
+							if (!nextResp) {
+								sawFinishReason = true;
+								output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
+								break;
+							}
+							legIndex += 1;
+							currentLegResponse = nextResp;
+							continue;
+						}
+						// Continuation budget reached or tool call emitted -> surface as length/toolUse (matching AGY 0x82acc84)
+						sawFinishReason = true;
+						output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
+						break;
+					}
+
+					if (
+						!sawFinishReason &&
+						latestContinuationToken &&
+						!legHasToolCall &&
+						midStreamRetries < MAX_MID_STREAM_RETRIES
+					) {
+						midStreamRetries += 1;
+						committedOutputTokens += legOutputTokens;
+						committedThinkingTokens += legThinkingTokens;
+						const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
+						await scheduler.wait(delayMs, { signal: options?.signal });
+						const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
+						if (!nextResp) {
+							sawFinishReason = true;
+							output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
+							break;
+						}
+						legIndex += 1;
+						currentLegResponse = nextResp;
+						continue;
+					}
+
+					break;
+				}
 				if (isBuffering && textBuffer !== "") {
 					const buffered = consumePlanningBuffer(textBuffer, toolNames, true);
 
@@ -1038,7 +1348,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							}
 						}
 
-						const streamed = await streamResponse(currentResponse);
+						const streamed = await streamResponse(
+							currentResponse,
+							requestUrl || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+						);
 						// Eventless silence may fail over to the alternate Antigravity
 						// endpoint. Once thinking has streamed, the endpoint is already
 						// committed downstream; Advisor mode may accept that silence,
@@ -1419,7 +1732,22 @@ export function buildRequest(
 			accountKey === undefined ? undefined : model.accountAccess?.[accountKey]?.antigravityWireProfiles,
 			model.antigravityWireProfiles,
 		);
-		if (profile?.maxOutputTokens !== undefined) {
+		const longDecodeCap = supportsAntigravityLongDecodeModel(model, wireModelId)
+			? resolveAntigravityLongDecodeMaxTokens(options.antigravityLongDecode)
+			: undefined;
+		if (longDecodeCap !== undefined) {
+			const profileCap = profile?.maxOutputTokens ?? 65_536;
+			if (
+				options.maxTokens !== undefined &&
+				options.maxTokens > 0 &&
+				options.maxTokens !== profileCap &&
+				options.maxTokens !== model.maxTokens
+			) {
+				generationConfig.maxOutputTokens = Math.min(options.maxTokens, longDecodeCap);
+			} else {
+				generationConfig.maxOutputTokens = longDecodeCap;
+			}
+		} else if (profile?.maxOutputTokens !== undefined) {
 			generationConfig.maxOutputTokens = profile.maxOutputTokens;
 		}
 		const thinkingConfig = generationConfig.thinkingConfig;
@@ -1460,6 +1788,14 @@ export function buildRequest(
 		};
 	}
 
+	const cliLongDecodeCap = supportsAntigravityLongDecodeModel(model, wireModelId)
+		? resolveAntigravityLongDecodeMaxTokens(options.antigravityLongDecode)
+		: undefined;
+	if (cliLongDecodeCap !== undefined) {
+		if (generationConfig.maxOutputTokens === undefined || generationConfig.maxOutputTokens <= 65_536) {
+			generationConfig.maxOutputTokens = cliLongDecodeCap;
+		}
+	}
 	if (Object.keys(generationConfig).length > 0) {
 		request.generationConfig = generationConfig;
 	}

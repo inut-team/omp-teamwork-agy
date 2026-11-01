@@ -1077,4 +1077,148 @@ describe("Google Gemini CLI alignment", () => {
 			expect(result.content).toHaveLength(0);
 		});
 	});
+
+	describe("CCPA multi-leg stream continuation (Long Decode)", () => {
+		it("raises maxOutputTokens when antigravityLongDecode is enabled on Gemini models, while keeping Claude at 64K", () => {
+			const model = createModel("google-antigravity");
+			const argonAuto = buildRequest(
+				model,
+				createContext(),
+				"proj-123",
+				{ requestModelId: "gemini-4-argon-high", antigravityLongDecode: "auto" },
+				true,
+			) as { request: { generationConfig?: { maxOutputTokens?: number } } };
+			expect(argonAuto.request.generationConfig?.maxOutputTokens).toBe(262_144);
+
+			const argon1m = buildRequest(
+				model,
+				createContext(),
+				"proj-123",
+				{ requestModelId: "gemini-4-argon-medium", antigravityLongDecode: "1m" },
+				true,
+			) as { request: { generationConfig?: { maxOutputTokens?: number } } };
+			expect(argon1m.request.generationConfig?.maxOutputTokens).toBe(1_048_576);
+
+			const claudeWithLongDecode = buildRequest(
+				model,
+				createContext(),
+				"proj-123",
+				{ requestModelId: "claude-sonnet-4-6", antigravityLongDecode: "1m" },
+				true,
+			) as { request: { generationConfig?: { maxOutputTokens?: number } } };
+			expect(claudeWithLongDecode.request.generationConfig?.maxOutputTokens).toBe(64_000);
+		});
+
+		it("chains multiple continuation legs seamlessly into one text block and accumulates usage like AGY", async () => {
+			const capturedBodies: Array<Record<string, unknown>> = [];
+			const legResponses = [
+				[
+					'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"First leg thinking","thought":true}]},"continuationToken":"tok-leg-1"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":800,"candidatesTokenCount":0,"thoughtsTokenCount":500,"totalTokenCount":1500}}}\n\n',
+					'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello from leg 1. "}]},"finishReason":"CONTINUATION","continuationToken":"tok-leg-1-end"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":800,"candidatesTokenCount":60000,"thoughtsTokenCount":5000,"totalTokenCount":66000}}}\n\n',
+				],
+				[
+					'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Second leg continues. "}]},"finishReason":"CONTINUATION","continuationToken":"tok-leg-2-end"}],"usageMetadata":{"promptTokenCount":66000,"cachedContentTokenCount":65000,"candidatesTokenCount":60000,"thoughtsTokenCount":4000,"totalTokenCount":130000}}}\n\n',
+				],
+				[
+					'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Final leg complete!"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":130000,"cachedContentTokenCount":129000,"candidatesTokenCount":10000,"thoughtsTokenCount":1000,"totalTokenCount":141000}}}\n\n',
+				],
+			];
+
+			let callIdx = 0;
+			const fetchMock: FetchImpl = async (_url, init) => {
+				const parsed = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+				capturedBodies.push(parsed);
+				const chunks = legResponses[callIdx++] ?? [];
+				const stream = new ReadableStream({
+					start(controller) {
+						const encoder = new TextEncoder();
+						for (const chunk of chunks) {
+							controller.enqueue(encoder.encode(chunk));
+						}
+						controller.close();
+					},
+				});
+				return new Response(stream, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			};
+
+			const model = {
+				...createModel("google-antigravity"),
+				id: "gemini-4-argon-high",
+				contextWindow: 1_048_576,
+			};
+			const stream = streamGoogleGeminiCli(model, createContext(), {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				requestModelId: "gemini-4-argon-high",
+				antigravityLongDecode: "256k",
+				fetch: fetchMock,
+			});
+			const result = await stream.result();
+
+			expect(capturedBodies).toHaveLength(3);
+			const req0 = capturedBodies[0]?.request as Record<string, unknown>;
+			const req1 = capturedBodies[1]?.request as Record<string, unknown>;
+			const req2 = capturedBodies[2]?.request as Record<string, unknown>;
+			expect(req0?.continuationToken).toBeUndefined();
+			expect(req1?.continuationToken).toBe("tok-leg-1-end");
+			expect(req2?.continuationToken).toBe("tok-leg-2-end");
+
+			expect(result.stopReason).toBe("stop");
+			expect(result.content).toEqual([
+				{ type: "thinking", thinking: "First leg thinking", thinkingSignature: undefined, summary: true },
+				{ type: "text", text: "Hello from leg 1. Second leg continues. Final leg complete!" },
+			]);
+			// Initial prompt = 1000 (200 uncached + 800 cached); output = (60k+5k) + (60k+4k) + (10k+1k) = 140,000; thinking = 5k + 4k + 1k = 10,000
+			expect(result.usage.input).toBe(200);
+			expect(result.usage.cacheRead).toBe(800);
+			expect(result.usage.output).toBe(140_000);
+			expect(result.usage.reasoningTokens).toBe(10_000);
+			expect(result.usage.totalTokens).toBe(141_000);
+		});
+
+		it("converts budget-exhausted error on a continuation leg into a clean length finish", async () => {
+			let callIdx = 0;
+			const fetchMock: FetchImpl = async () => {
+				callIdx += 1;
+				if (callIdx === 1) {
+					const chunk =
+						'data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Part 1 "}]},"finishReason":"CONTINUATION","continuationToken":"tok-1"}],"usageMetadata":{"promptTokenCount":500,"candidatesTokenCount":60000,"thoughtsTokenCount":4000,"totalTokenCount":64500}}}\n\n';
+					return new Response(
+						new ReadableStream({
+							start(controller) {
+								controller.enqueue(new TextEncoder().encode(chunk));
+								controller.close();
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "text/event-stream" } },
+					);
+				}
+				return new Response(
+					JSON.stringify({
+						error: {
+							code: 400,
+							message: "max_output_tokens budget has already been exhausted across continuation legs",
+							status: "OUT_OF_RANGE",
+						},
+					}),
+					{ status: 400, headers: { "Content-Type": "application/json" } },
+				);
+			};
+
+			const model = { ...createModel("google-antigravity"), id: "gemini-4-argon-high" };
+			const stream = streamGoogleGeminiCli(model, createContext(), {
+				apiKey: JSON.stringify({ token: "token", projectId: "proj-123" }),
+				requestModelId: "gemini-4-argon-high",
+				antigravityLongDecode: "256k",
+				fetch: fetchMock,
+			});
+			const result = await stream.result();
+			expect(callIdx).toBe(2);
+			expect(result.stopReason).toBe("length");
+			expect(result.content).toEqual([{ type: "text", text: "Part 1 " }]);
+			expect(result.usage.output).toBe(64_000);
+		});
+	});
 });

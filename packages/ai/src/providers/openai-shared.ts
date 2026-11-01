@@ -1356,6 +1356,15 @@ export function resolveOpenAICompletionsOutputClamp(
 	if (compat.clampOutputToModelMax) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
 	}
+	if (
+		typeof model.maxTokens === "number" &&
+		model.maxTokens > OPENAI_MAX_OUTPUT_TOKENS &&
+		(model.provider === "apphub" ||
+			/^ag\/gemini-/i.test(model.id) ||
+			/gemini-4-argon|gemini-3\.8-flash/i.test(model.id))
+	) {
+		return model.maxTokens;
+	}
 	return undefined;
 }
 
@@ -1366,10 +1375,23 @@ export function resolveOpenAICompletionsOutputClamp(
  * output cap instead of the conservative 64k OpenAI-compatible default.
  */
 export function resolveOpenAIResponsesOutputClamp(
-	model: Pick<Model, "maxTokens"> & { compat: Pick<ResolvedOpenAISharedCompat, "clampOutputToModelMax"> },
+	model: Pick<Model, "maxTokens"> & {
+		id?: string;
+		provider?: string;
+		compat: Pick<ResolvedOpenAISharedCompat, "clampOutputToModelMax">;
+	},
 ): number | undefined {
 	if (model.compat.clampOutputToModelMax) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
+	}
+	if (
+		typeof model.maxTokens === "number" &&
+		model.maxTokens > OPENAI_MAX_OUTPUT_TOKENS &&
+		(model.provider === "apphub" ||
+			(typeof model.id === "string" &&
+				(/^ag\/gemini-/i.test(model.id) || /gemini-4-argon|gemini-3\.8-flash/i.test(model.id))))
+	) {
+		return model.maxTokens;
 	}
 	return undefined;
 }

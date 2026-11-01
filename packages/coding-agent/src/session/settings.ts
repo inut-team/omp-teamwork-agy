@@ -1029,6 +1029,65 @@ export const cfgProvidersAntigravityEndpoint = register({
 	},
 });
 
+const ANTIGRAVITY_LONG_DECODE_VALUES = ["off", "auto", "128k", "256k", "512k", "1m"] as const;
+
+function parseAntigravityLongDecodeEnv(raw: string): (typeof ANTIGRAVITY_LONG_DECODE_VALUES)[number] | undefined {
+	const clean = raw.trim().toLowerCase();
+	if (clean === "0" || clean === "false" || clean === "no" || clean === "off") return "off";
+	if (clean === "1" || clean === "true" || clean === "yes" || clean === "on" || clean === "auto") return "auto";
+	return ANTIGRAVITY_LONG_DECODE_VALUES.find(value => value === clean);
+}
+
+export const cfgProvidersAntigravityLongDecode = register({
+	id: "providers.antigravityLongDecode",
+	type: "enum",
+	values: ANTIGRAVITY_LONG_DECODE_VALUES,
+	default: "auto",
+	env: {
+		name: "OMP_ANTIGRAVITY_LONG_DECODE",
+		parse: parseAntigravityLongDecodeEnv,
+	},
+	ui: {
+		tab: "providers",
+		group: "Services",
+		label: "Antigravity Long Decode",
+		description:
+			"Multi-leg CCPA stream continuation for Gemini models on google-antigravity and apphub/ag routes. Automatically chains continuationToken legs beyond 64K output (up to 32 legs, matching native Antigravity CLI). The OMP_ANTIGRAVITY_LONG_DECODE env var overrides this.",
+		options: [
+			{
+				value: "auto",
+				label: "Auto (256K multi-leg)",
+				description: "Chain continuationToken legs up to 262,144 output tokens (default)",
+			},
+			{
+				value: "off",
+				label: "Off (64K single leg)",
+				description: "Standard single-stream 65,536 token ceiling",
+			},
+			{
+				value: "128k",
+				label: "128K (2 legs)",
+				description: "Up to 131,072 output tokens across continuation legs",
+			},
+			{
+				value: "256k",
+				label: "256K (4 legs)",
+				description: "Up to 262,144 output tokens across continuation legs",
+			},
+			{
+				value: "512k",
+				label: "512K (8 legs)",
+				description: "Up to 524,288 output tokens across continuation legs",
+			},
+			{
+				value: "1m",
+				label: "1M (16 legs)",
+				description: "Up to 1,048,576 output tokens (fitted to context window)",
+			},
+		],
+	},
+});
+
 export const cfgProvidersFireworksTier = register({
 	id: "providers.fireworksTier",
 	type: "enum",

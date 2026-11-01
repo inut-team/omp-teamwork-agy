@@ -12,6 +12,10 @@
  */
 import { fitOutputTokensToContextWindow, type StreamFn, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
+import {
+	resolveAntigravityLongDecodeMaxTokens,
+	supportsAntigravityLongDecodeModel,
+} from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import { openAIResponsesReplaysNativeHistory } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
 import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-side-fallback";
 import type { Settings } from "../config/settings";
@@ -24,6 +28,7 @@ import {
 	cfgProvidersAnthropicServerSideFallback,
 	cfgProvidersAnthropicSlowMode,
 	cfgProvidersAntigravityEndpoint,
+	cfgProvidersAntigravityLongDecode,
 	cfgProvidersCacheRetention,
 	cfgProvidersMaxInFlightRequests,
 	cfgProvidersMuseCodeStoreResponses,
@@ -86,6 +91,8 @@ export function createSettingsAwareStreamFn(
 		const openrouterVariant =
 			openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
 		const antigravityEndpointMode = cfgProvidersAntigravityEndpoint.get(settings);
+		const antigravityLongDecode = cfgProvidersAntigravityLongDecode.get(settings);
+		const effectiveLongDecode = streamOptions?.antigravityLongDecode ?? antigravityLongDecode;
 		const textVerbosity =
 			model.api === "openai-codex-responses"
 				? cfgTextVerbosity.isConfigured(settings)
@@ -155,12 +162,31 @@ export function createSettingsAwareStreamFn(
 			tokenizer = new Tokenizer(model, { nativeHistoryReplay });
 			tokenizers.set(tokenizerKey, tokenizer);
 		}
-		const maxTokens = fitOutputTokensToContextWindow(model, context, streamOptions?.maxTokens, tokenizer);
+		const longDecodeCap = supportsAntigravityLongDecodeModel(model)
+			? resolveAntigravityLongDecodeMaxTokens(effectiveLongDecode)
+			: undefined;
+		const effectiveModel =
+			longDecodeCap !== undefined && (model.maxTokens ?? 0) < longDecodeCap
+				? {
+						...model,
+						maxTokens:
+							model.contextWindow && model.contextWindow > 0
+								? Math.min(longDecodeCap, model.contextWindow)
+								: longDecodeCap,
+					}
+				: model;
+		const maxTokens = fitOutputTokensToContextWindow(
+			effectiveModel,
+			context,
+			streamOptions?.maxTokens ?? (effectiveModel !== model ? (effectiveModel.maxTokens ?? undefined) : undefined),
+			tokenizer,
+		);
 		const merged: SimpleStreamOptions = {
 			...streamOptions,
 			maxTokens,
 			openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
 			antigravityEndpointMode: streamOptions?.antigravityEndpointMode ?? antigravityEndpointMode,
+			antigravityLongDecode: effectiveLongDecode,
 			textVerbosity: streamOptions?.textVerbosity ?? textVerbosity,
 			cacheRetention: streamOptions?.cacheRetention ?? cacheRetention,
 			streamFirstEventTimeoutMs: streamOptions?.streamFirstEventTimeoutMs ?? streamFirstEventTimeoutMs,
@@ -180,6 +206,6 @@ export function createSettingsAwareStreamFn(
 			...(codexAccessPrograms !== undefined ? { codexAccessPrograms } : {}),
 			...(slowModeHooks !== undefined ? { anthropicSlowMode: slowModeHooks } : {}),
 		};
-		return base(model, context, merged);
+		return base(effectiveModel, context, merged);
 	};
 }

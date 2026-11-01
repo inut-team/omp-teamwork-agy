@@ -776,6 +776,8 @@ export interface LiveSteerClaim {
 }
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
+export type AntigravityLongDecodeMode = "off" | "auto" | "128k" | "256k" | "512k" | "1m";
+
 export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	/**
 	 * API key for the request: either a static bearer string, or an
@@ -863,6 +865,8 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	cachedContent?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
+	/** Antigravity multi-leg CCPA stream continuation ceiling ("off", "auto", "128k", "256k", "512k", "1m"). */
+	antigravityLongDecode?: AntigravityLongDecodeMode;
 	/**
 	 * Anthropic `server-side-fallback-2026-06-01` fallback chain (top-level
 	 * `fallbacks` request field). Opt-in ONLY — leaving this undefined is

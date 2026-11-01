@@ -26,6 +26,7 @@ import {
 	cfgModelLoopGuardCheckAssistantContent,
 	cfgModelLoopGuardEnabled,
 	cfgProvidersAntigravityEndpoint,
+	cfgProvidersAntigravityLongDecode,
 	cfgProvidersMaxInFlightRequests,
 	cfgProvidersOpenrouterVariant,
 	validateProviderMaxInFlightRequests,
@@ -228,11 +229,16 @@ export class SessionProviderBoundary {
 				: undefined;
 		const antigravityEndpointMode =
 			provider === "google-antigravity" ? cfgProvidersAntigravityEndpoint.get(this.#host.settings) : undefined;
+		const antigravityLongDecode =
+			provider === "google-antigravity" || provider === "google-gemini-cli" || provider === "apphub"
+				? cfgProvidersAntigravityLongDecode.get(this.#host.settings)
+				: undefined;
 
 		const preparedOptions: SimpleStreamOptions = {
 			...options,
 			...(openrouterVariant !== undefined && { openrouterVariant }),
 			...(antigravityEndpointMode !== undefined && { antigravityEndpointMode }),
+			...(antigravityLongDecode !== undefined && { antigravityLongDecode }),
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				options.maxInFlightRequests ?? cfgProvidersMaxInFlightRequests.get(this.#host.settings),
 			),
