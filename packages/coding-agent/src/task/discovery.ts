@@ -366,5 +366,33 @@ export function getAgent(agents: AgentDefinition[], name: string): AgentDefiniti
 	if (normalized === "teamwork-awaiter" || normalized === "teamwork-preview-awaiter" || normalized === "awaiter") {
 		return agents.find(a => a.name === "teamwork-awaiter");
 	}
+	if (
+		normalized === "teamwork-image-generator" ||
+		normalized === "teamwork-preview-image-generator" ||
+		normalized === "image-generator" ||
+		normalized === "imagegen"
+	) {
+		return agents.find(a => a.name === "teamwork-image-generator");
+	}
+	if (
+		normalized === "teamwork-browser" ||
+		normalized === "teamwork-preview-browser" ||
+		normalized === "browser-subagent" ||
+		normalized === "browser-agent" ||
+		normalized === "webview-browser" ||
+		normalized === "browser-qa"
+	) {
+		return agents.find(a => a.name === "teamwork-browser");
+	}
+	if (
+		normalized === "teamwork-ui-designer" ||
+		normalized === "teamwork-preview-ui-designer" ||
+		normalized === "ui-designer" ||
+		normalized === "frontend-designer" ||
+		normalized === "ui-architect" ||
+		normalized === "design-agent"
+	) {
+		return agents.find(a => a.name === "teamwork-ui-designer");
+	}
 	return undefined;
 }

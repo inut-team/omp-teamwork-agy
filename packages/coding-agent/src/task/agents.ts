@@ -36,6 +36,9 @@ import teamworkInterviewerMd from "../prompts/agents/teamwork-interviewer.md" wi
 import teamworkSurgicalReviserMd from "../prompts/agents/teamwork-surgical-reviser.md" with { type: "text" };
 import teamworkKnowledgeCuratorMd from "../prompts/agents/teamwork-knowledge-curator.md" with { type: "text" };
 import teamworkAwaiterMd from "../prompts/agents/teamwork-awaiter.md" with { type: "text" };
+import teamworkImageGeneratorMd from "../prompts/agents/teamwork-image-generator.md" with { type: "text" };
+import teamworkBrowserMd from "../prompts/agents/teamwork-browser.md" with { type: "text" };
+import teamworkUiDesignerMd from "../prompts/agents/teamwork-ui-designer.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -118,6 +121,9 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-surgical-reviser.md", template: teamworkSurgicalReviserMd },
 	{ fileName: "teamwork-knowledge-curator.md", template: teamworkKnowledgeCuratorMd },
 	{ fileName: "teamwork-awaiter.md", template: teamworkAwaiterMd },
+	{ fileName: "teamwork-image-generator.md", template: teamworkImageGeneratorMd },
+	{ fileName: "teamwork-browser.md", template: teamworkBrowserMd },
+	{ fileName: "teamwork-ui-designer.md", template: teamworkUiDesignerMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.

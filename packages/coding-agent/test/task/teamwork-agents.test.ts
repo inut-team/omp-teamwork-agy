@@ -47,6 +47,9 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(agentNames).toContain("teamwork-surgical-reviser");
 		expect(agentNames).toContain("teamwork-knowledge-curator");
 		expect(agentNames).toContain("teamwork-awaiter");
+		expect(agentNames).toContain("teamwork-image-generator");
+		expect(agentNames).toContain("teamwork-browser");
+		expect(agentNames).toContain("teamwork-ui-designer");
 	});
 
 	it("resolves teamwork agent aliases correctly", () => {
@@ -160,6 +163,16 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 		expect(getAgent(agents, "teamwork-awaiter")?.name).toBe("teamwork-awaiter");
 		expect(getAgent(agents, "teamwork_awaiter")?.name).toBe("teamwork-awaiter");
 		expect(getAgent(agents, "awaiter")?.name).toBe("teamwork-awaiter");
+		expect(getAgent(agents, "teamwork-image-generator")?.name).toBe("teamwork-image-generator");
+		expect(getAgent(agents, "image_generator")?.name).toBe("teamwork-image-generator");
+		expect(getAgent(agents, "image-generator")?.name).toBe("teamwork-image-generator");
+		expect(getAgent(agents, "teamwork-browser")?.name).toBe("teamwork-browser");
+		expect(getAgent(agents, "browser_subagent")?.name).toBe("teamwork-browser");
+		expect(getAgent(agents, "webview_browser")?.name).toBe("teamwork-browser");
+		expect(getAgent(agents, "browser-qa")?.name).toBe("teamwork-browser");
+		expect(getAgent(agents, "teamwork-ui-designer")?.name).toBe("teamwork-ui-designer");
+		expect(getAgent(agents, "ui-designer")?.name).toBe("teamwork-ui-designer");
+		expect(getAgent(agents, "frontend-designer")?.name).toBe("teamwork-ui-designer");
 	});
 
 	it("teamwork orchestrators have unrestricted spawn permissions (*)", () => {
@@ -286,6 +299,37 @@ describe("Teamwork Agents & Slash Command Integration", () => {
 			resolveRoleModelWithThinking: () => ({ model: undefined, thinkingLevel: undefined }),
 		} as never);
 		expect(resolvedNoModel.thinkingLevel).toBe(Effort.XHigh);
+	});
+
+	it("provides /ui (/design) and /browser-agent (/browser-qa, /webview) slash commands with AGY 1.4.12 UI Studio & Browser HUD contracts", async () => {
+		const uiCmd = BUILTIN_AGY_COMPAT_SLASH_COMMANDS.find(c => c.name === "ui");
+		expect(uiCmd).toBeDefined();
+		expect(uiCmd?.aliases).toEqual(expect.arrayContaining(["design", "frontend", "ui-studio"]));
+		const expandedUi = await expandAgyCompatSlashCommand("/design xây dựng landing page SaaS hiện đại");
+		expect(expandedUi).toContain("<UI_DESIGN_STUDIO>");
+		expect(expandedUi).toContain("skill://impeccable");
+		expect(expandedUi).toContain("generate_image");
+		expect(expandedUi).toContain("1440x900");
+		expect(expandedUi).toContain("390x844");
+		expect(expandedUi).toContain("xây dựng landing page SaaS hiện đại");
+
+		const browserCmd = BUILTIN_AGY_COMPAT_SLASH_COMMANDS.find(c => c.name === "browser-agent");
+		expect(browserCmd).toBeDefined();
+		expect(browserCmd?.aliases).toEqual(expect.arrayContaining(["browser-qa", "webview", "browser-subagent"]));
+		const expandedBrowser = await expandAgyCompatSlashCommand(
+			"/browser-qa http://localhost:5173 kiểm tra responsive",
+		);
+		expect(expandedBrowser).toContain("<BROWSER_AGENT>");
+		expect(expandedBrowser).toContain("teamwork-browser");
+		expect(expandedBrowser).toContain("annotate: true");
+		expect(expandedBrowser).toContain("http://localhost:5173 kiểm tra responsive");
+
+		const agents = loadBundledAgents();
+		const imgAgent = getAgent(agents, "image-generator");
+		expect(imgAgent?.tools).toContain("generate_image");
+		const uiAgent = getAgent(agents, "ui-designer");
+		expect(uiAgent?.tools).toContain("generate_image");
+		expect(uiAgent?.spawns).toEqual(expect.arrayContaining(["teamwork-image-generator", "teamwork-browser"]));
 	});
 
 	it("provides /grill-me and /grill slash command matching AGY <GRILL_ME> design-tree interview contract and command stacking", async () => {

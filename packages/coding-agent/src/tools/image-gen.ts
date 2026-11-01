@@ -22,7 +22,7 @@ import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
 import { resolveConfiguredModelTarget } from "../session/role-models";
-import { resolveReadPath, specialFileKind } from "./path-utils";
+import { resolveReadPath, resolveToCwd, specialFileKind } from "./path-utils";
 
 const IMAGE_TIMEOUT = 3 * 60 * 1000;
 const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
@@ -48,6 +48,9 @@ export const imageGenSchema = type({
 	"image_size?": imageSizeSchema,
 	"input?": inputImageSchema.array().describe("input images"),
 	"model?": type("string").describe("image model selector for this request"),
+	"output_path?": type("string").describe(
+		"destination file path (e.g. public/images/hero.png); defaults to temp file",
+	),
 });
 export type ImageGenParams = typeof imageGenSchema.infer;
 
@@ -128,10 +131,24 @@ function imageExtension(mimeType: string): string {
 	return extensions[mimeType] ?? "png";
 }
 
-async function saveImagesToTemp(images: ImageGenerationResult["images"]): Promise<string[]> {
+async function saveGeneratedImages(
+	images: ImageGenerationResult["images"],
+	cwd: string,
+	outputPath?: string,
+): Promise<string[]> {
+	const trimmedOutput = outputPath?.trim();
 	return Promise.all(
-		images.map(async image => {
-			const filepath = path.join(os.tmpdir(), `omp-image-${Snowflake.next()}.${imageExtension(image.mimeType)}`);
+		images.map(async (image, index) => {
+			let filepath: string;
+			if (trimmedOutput) {
+				const resolved = resolveToCwd(trimmedOutput, cwd);
+				const ext = path.extname(resolved);
+				const effectiveExt = ext || `.${imageExtension(image.mimeType)}`;
+				const stem = ext ? resolved.slice(0, -ext.length) : resolved;
+				filepath = index === 0 ? `${stem}${effectiveExt}` : `${stem}-${index + 1}${effectiveExt}`;
+			} else {
+				filepath = path.join(os.tmpdir(), `omp-image-${Snowflake.next()}.${imageExtension(image.mimeType)}`);
+			}
 			await Bun.write(filepath, Buffer.from(image.data, "base64"));
 			return filepath;
 		}),
@@ -192,8 +209,10 @@ function defaultImageCandidates(chain: RoleChainCandidate[], sessionModel: Model
 async function buildToolResult(
 	model: Model,
 	result: ImageGenerationResult,
+	cwd: string,
+	outputPath?: string,
 ): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
-	const imagePaths = await saveImagesToTemp(result.images);
+	const imagePaths = await saveGeneratedImages(result.images, cwd, outputPath);
 	// Hosted backends may run a different model than the selected catalog entry; report what actually ran.
 	const ranModel = result.model ?? model.id;
 	if (imagePaths.length === 0) {
@@ -329,7 +348,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						carrier: resolvedCarrier,
 						sessionId,
 					});
-					return buildToolResult(model, result);
+					return buildToolResult(model, result, ctx.sessionManager.getCwd(), params.output_path);
 				} catch (error) {
 					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
 					failures.push(error);

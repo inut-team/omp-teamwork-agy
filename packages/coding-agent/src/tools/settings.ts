@@ -611,7 +611,7 @@ export const cfgSpeechgenEnabled = register({
 export const cfgGenerateImageEnabled = register({
 	id: "generate_image.enabled",
 	type: "boolean",
-	default: false,
+	default: true,
 	ui: {
 		tab: "tools",
 		group: "Available Tools",

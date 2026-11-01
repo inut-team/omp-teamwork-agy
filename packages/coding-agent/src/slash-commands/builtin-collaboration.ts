@@ -17,6 +17,7 @@ import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui
 import { openPath } from "../utils/open";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
+import { buildBrowserAgentPrompt } from "./builtin-agy-compat";
 import { CollabQrCodeComponent, collabBrowserLink } from "@oh-my-pi/pi-tui/chrome/collab-qrcode";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { formatDumpArchiveReport } from "../session/session-dump-format";
@@ -524,7 +525,9 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			if (!arg) next = !current;
 			else if (arg === "headless" || arg === "hidden") next = true;
 			else if (arg === "visible" || arg === "show" || arg === "headful") next = false;
-			else return usage("Usage: /browser [headless|visible]", runtime);
+			else if (/\s|^https?:\/\/|^localhost\b|^127\.0\.0\.1\b|^file:\/\//i.test(command.args.trim())) {
+				return { prompt: buildBrowserAgentPrompt(command.args) };
+			} else return usage("Usage: /browser [headless|visible]", runtime);
 			cfgBrowserHeadless.set(runtime.settings, next);
 			try {
 				await restartBrowserForModeChange();
@@ -554,6 +557,9 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				next = true;
 			} else if (arg === "visible" || arg === "show" || arg === "headful") {
 				next = false;
+			} else if (/\s|^https?:\/\/|^localhost\b|^127\.0\.0\.1\b|^file:\/\//i.test(command.args.trim())) {
+				clearSubmittedText(runtime);
+				return { prompt: buildBrowserAgentPrompt(command.args) };
 			} else {
 				runtime.ctx.showStatus("Usage: /browser [headless|visible]");
 				clearSubmittedText(runtime);

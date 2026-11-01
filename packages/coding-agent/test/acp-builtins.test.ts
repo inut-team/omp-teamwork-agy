@@ -1375,6 +1375,25 @@ describe("wave 3 commands", () => {
 		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(true);
 	});
 
+	it("/browser <url or task>: routes to browser-agent prompt without mutating headless setting", async () => {
+		const { output, runtime } = createRuntime();
+		cfgBrowserEnabled.set(runtime.settings, true);
+		cfgBrowserHeadless.set(runtime.settings, true);
+		const rUrl = await executeAcpBuiltinSlashCommand("/browser http://localhost:3000", runtime);
+		expect(rUrl).toBeDefined();
+		if (rUrl && "prompt" in rUrl) {
+			expect(rUrl.prompt).toContain("<BROWSER_AGENT>");
+			expect(rUrl.prompt).toContain("http://localhost:3000");
+		} else {
+			throw new Error("Expected prompt result for /browser <url>");
+		}
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(true);
+
+		const rInvalid = await executeAcpBuiltinSlashCommand("/browser bogusmode", runtime);
+		expect(rInvalid).toEqual({ consumed: true, failed: true });
+		expect(output[output.length - 1]).toContain("Usage: /browser [headless|visible]");
+	});
+
 	// /compact
 	it("/compact: reports Compaction complete. after session.compact resolves", async () => {
 		const { output, session, runtime } = createRuntime();

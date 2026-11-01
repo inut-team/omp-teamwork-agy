@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Antigravity UI Design Studio and Browser HUD parity: `/ui` (`/design`, `/frontend`) and `/browser-agent` (`/browser-qa`, `/webview`, plus `/browser <url|task>`) slash commands, bundled `teamwork-ui-designer`, `teamwork-image-generator`, and `teamwork-browser` subagents, and default-enabled `generate_image` with workspace-relative `output_path` asset saving.
+
 ## [18.14.1] - 2026-10-31
 
 ### Added

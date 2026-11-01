@@ -1,5 +1,7 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import grillMePrompt from "../prompts/slash-commands/grill-me.md" with { type: "text" };
+import browserAgentPrompt from "../prompts/slash-commands/browser-agent.md" with { type: "text" };
+import uiDesignPrompt from "../prompts/slash-commands/ui-design.md" with { type: "text" };
 import type { SlashCommandSpec } from "./types";
 import { formatTeamworkStatus, inspectTeamworkStatus } from "../task/teamwork-status";
 import {
@@ -14,6 +16,16 @@ import {
 export function buildGrillMePrompt(args?: string): string {
 	const trimmed = args?.trim();
 	return prompt.render(grillMePrompt, { arguments: trimmed || undefined }).trim();
+}
+
+export function buildUiDesignPrompt(args?: string): string {
+	const trimmed = args?.trim();
+	return prompt.render(uiDesignPrompt, { arguments: trimmed || undefined }).trim();
+}
+
+export function buildBrowserAgentPrompt(args?: string): string {
+	const trimmed = args?.trim();
+	return prompt.render(browserAgentPrompt, { arguments: trimmed || undefined }).trim();
 }
 
 export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -261,6 +273,37 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 					typeof thinkingLevel === "string" ? thinkingLevel : undefined,
 				),
 			};
+		},
+	},
+	{
+		name: "ui",
+		aliases: ["design", "frontend", "ui-studio"],
+		icon: "rocket",
+		description:
+			"Design, build, or elevate UI with Antigravity aesthetics, bespoke imagery, and browser HUD QA (agy compat)",
+		inlineHint: "<UI/frontend task description>",
+		allowArgs: true,
+		handle: async (command, _runtime) => {
+			return { prompt: buildUiDesignPrompt(command.args) };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			return { prompt: buildUiDesignPrompt(command.args) };
+		},
+	},
+	{
+		name: "browser-agent",
+		aliases: ["browser-qa", "webview", "browser-subagent"],
+		icon: "globe",
+		description: "Invoke a browser agent for interactive web tasks & responsive HUD UI QA (agy compat)",
+		inlineHint: "<URL or web/UI verification task>",
+		allowArgs: true,
+		handle: async (command, _runtime) => {
+			return { prompt: buildBrowserAgentPrompt(command.args) };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			return { prompt: buildBrowserAgentPrompt(command.args) };
 		},
 	},
 ];

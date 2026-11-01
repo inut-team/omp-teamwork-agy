@@ -5,4 +5,5 @@ Generates or edits images with the configured image-model role.
 - Multiple `input`: identify each image's role in `subject` (for example, `Image 1` composition; `Image 2` lighting).
 - Specific catalog model required? Set `model`; otherwise omit it.
 - Text: request "sharp, legible, correctly spelled"; keep it short.
+- Project/UI asset? Set `output_path` (e.g. `public/assets/hero.png`) to write directly into the workspace instead of a temp file.
 </instruction>

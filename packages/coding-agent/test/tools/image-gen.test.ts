@@ -655,4 +655,35 @@ describe("imageGenTool catalog routing", () => {
 		},
 		10_000,
 	);
+
+	it("writes generated UI assets directly to workspace-relative output_path", async () => {
+		const tempDir = TempDir.createSync("@omp-image-output-path-");
+		try {
+			const model = catalogModel("deepinfra", "test-image", "openai-images");
+			const baseCtx = createContext({
+				models: [model],
+				settings: Settings.isolated(),
+				fetch: async () => imageResponse(),
+			});
+			const ctx: CustomToolContext = {
+				...baseCtx,
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+			};
+			const result = await imageGenTool.execute(
+				"ui-hero-asset",
+				{
+					subject: "minimalist architectural hero illustration",
+					model: "deepinfra/test-image",
+					output_path: "public/images/hero.png",
+				},
+				undefined,
+				ctx,
+			);
+			const expectedPath = path.join(tempDir.path(), "public/images/hero.png");
+			expect(result.details?.imagePaths).toEqual([expectedPath]);
+			expect(await Bun.file(expectedPath).text()).toBe("catalog-image");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
 });
