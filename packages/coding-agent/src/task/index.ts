@@ -274,6 +274,98 @@ function validateEffort(effort: TaskEffort | undefined, label: string): string |
 	if (effort === undefined || TASK_EFFORTS.includes(effort)) return undefined;
 	return `${label} has an invalid \`effort\` value ${JSON.stringify(effort)}. Use "lo", "med", or "hi".`;
 }
+const WORKSPACE_MODES = ["inherit", "share", "branch"] as const;
+const MAX_SHARD_GROUP_SIZE = 32;
+
+function validateWorkspaceField(item: TaskItem | TaskParams, label: string): string | undefined {
+	if (!("workspace" in item) || item.workspace === undefined) return undefined;
+	if (!WORKSPACE_MODES.includes(item.workspace)) {
+		return `${label} has an invalid \`workspace\` value ${JSON.stringify(item.workspace)}. Use "inherit", "share", or "branch".`;
+	}
+	if (item.isolated === true && item.workspace === "inherit") {
+		return `${label} cannot combine \`isolated: true\` with \`workspace: "inherit"\`.`;
+	}
+	if (item.isolated === false && (item.workspace === "share" || item.workspace === "branch")) {
+		return `${label} cannot combine \`isolated: false\` with \`workspace: "${item.workspace}"\`.`;
+	}
+	return undefined;
+}
+
+function validateShardGroupFields(item: TaskItem, label: string): string | undefined {
+	if (item.count !== undefined) {
+		if (
+			typeof item.count !== "number" ||
+			!Number.isInteger(item.count) ||
+			item.count < 1 ||
+			item.count > MAX_SHARD_GROUP_SIZE
+		) {
+			return `${label} \`count\` must be an integer between 1 and ${MAX_SHARD_GROUP_SIZE}.`;
+		}
+	}
+	if (item.shardTasks !== undefined) {
+		if (
+			!Array.isArray(item.shardTasks) ||
+			item.shardTasks.length === 0 ||
+			item.shardTasks.length > MAX_SHARD_GROUP_SIZE
+		) {
+			return `${label} \`shardTasks\` must be a non-empty array of 1..${MAX_SHARD_GROUP_SIZE} slice descriptions.`;
+		}
+		for (let s = 0; s < item.shardTasks.length; s++) {
+			if (typeof item.shardTasks[s] !== "string" || item.shardTasks[s]!.trim() === "") {
+				return `${label} \`shardTasks[${s}]\` must be a non-empty string.`;
+			}
+		}
+		if (item.count !== undefined && item.count !== item.shardTasks.length) {
+			return `${label} \`count\` (${item.count}) must match \`shardTasks.length\` (${item.shardTasks.length}) when both are set.`;
+		}
+	}
+	return undefined;
+}
+
+function validateSwarmCoordinationFields(item: TaskItem | TaskParams, label: string): string | undefined {
+	if (item.forkFrom !== undefined && (typeof item.forkFrom !== "string" || item.forkFrom.trim() === "")) {
+		return `${label} \`forkFrom\` must be a non-empty agent name or "coordinator".`;
+	}
+	if (item.forkFrom !== undefined && item.sourceSession !== undefined) {
+		return `${label} cannot combine \`forkFrom\` with \`sourceSession\`.`;
+	}
+	if (item.channels !== undefined) {
+		if (!Array.isArray(item.channels) || item.channels.some(ch => typeof ch !== "string" || ch.trim() === "")) {
+			return `${label} \`channels\` must be an array of non-empty topic names.`;
+		}
+	}
+	return undefined;
+}
+
+interface ExpandedTaskItem extends TaskItem {
+	shardSuffix?: string;
+}
+
+function expandBatchTaskItems(tasks: readonly TaskItem[]): ExpandedTaskItem[] {
+	const expanded: ExpandedTaskItem[] = [];
+	for (const item of tasks) {
+		const shardList = item.shardTasks;
+		const replicaCount = shardList ? shardList.length : (item.count ?? 1);
+		if (!shardList && replicaCount <= 1) {
+			const { count: _c, shardTasks: _s, ...rest } = item;
+			expanded.push(rest);
+			continue;
+		}
+		const baseName = item.name?.trim() || item.agent?.trim() || "Worker";
+		for (let idx = 0; idx < replicaCount; idx++) {
+			const { count: _c, shardTasks: _s, ...rest } = item;
+			const suffix = shardList
+				? `\n\n# Assigned Shard (${idx + 1}/${replicaCount})\n${shardList[idx]!.trim()}`
+				: `\n\n# Replica Assignment\nHomogeneous worker replica ${idx + 1} of ${replicaCount}.`;
+			expanded.push({
+				...rest,
+				name: `${baseName}-${idx + 1}`,
+				...(typeof rest.task === "string" ? { task: `${rest.task.trimEnd()}${suffix}` } : { shardSuffix: suffix }),
+			});
+		}
+	}
+	return expanded;
+}
 
 function validateTaskInput(item: TaskItem | undefined, label: string, fileEnabled: boolean): string | undefined {
 	const hasTask = item?.task !== undefined;
@@ -323,17 +415,24 @@ function validateSpawnParams(
 			return "Top-level `task` or `taskFile` is not part of the batch shape. Put the work in `tasks[]` items.";
 		}
 		for (let i = 0; i < tasks.length; i++) {
-			const item = tasks[i];
+			const item = tasks[i]!;
 			const label = `Task ${i + 1}${item?.name ? ` (\`${item.name}\`)` : ""}`;
 			const inputError = validateTaskInput(item, label, fileEnabled);
 			if (inputError) return inputError;
 			const effortError = validateEffort(item.effort, label);
 			if (effortError) return effortError;
+			const workspaceError = validateWorkspaceField(item, label);
+			if (workspaceError) return workspaceError;
+			const shardError = validateShardGroupFields(item, label);
+			if (shardError) return shardError;
+			const swarmError = validateSwarmCoordinationFields(item, label);
+			if (swarmError) return swarmError;
 			const modelError = validateModel(item, label, defaultAgent, settings);
 			if (modelError) return modelError;
 		}
+		const expandedTasks = expandBatchTaskItems(tasks);
 		const seen = new Map<string, string>();
-		for (const item of tasks) {
+		for (const item of expandedTasks) {
 			const name = item.name?.trim();
 			if (!name) continue;
 			const key = name.toLowerCase();
@@ -351,9 +450,14 @@ function validateSpawnParams(
 	if (batchEnabled && params.task === undefined && params.taskFile === undefined) {
 		return "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`.";
 	}
+	if ("count" in params || "shardTasks" in params) {
+		return "`count` and `shardTasks` are batch-item fields; pass them inside `tasks[]` with `task.batch` enabled.";
+	}
 	return (
 		validateTaskInput(params, "The call", fileEnabled) ??
 		validateEffort(params.effort, "The call") ??
+		validateWorkspaceField(params, "The call") ??
+		validateSwarmCoordinationFields(params, "The call") ??
 		validateModel(params, "The call", defaultAgent, settings)
 	);
 }
@@ -379,33 +483,60 @@ function spawnModelFields(params: TaskParams): Pick<StructuredSubagentRequest, "
 	// `validateModel` rejected anything but one string before dispatch.
 	return typeof params.model === "string" ? { perCallModel: params.model } : {};
 }
+function spawnIsolationFields(params: TaskParams): Pick<StructuredSubagentRequest, "isolation"> {
+	if (params.workspace === "share") {
+		return { isolation: { requested: true, merge: "patch" } };
+	}
+	if (params.workspace === "branch") {
+		return { isolation: { requested: true, merge: "branch" } };
+	}
+	if (params.workspace === "inherit") {
+		return { isolation: { requested: false } };
+	}
+	if ("isolated" in params) {
+		return { isolation: { requested: params.isolated } };
+	}
+	return {};
+}
+
+function spawnSwarmFields(params: TaskParams): Pick<StructuredSubagentRequest, "forkFrom" | "channels"> {
+	return {
+		...(params.forkFrom !== undefined ? { forkFrom: params.forkFrom } : {}),
+		...(params.channels !== undefined ? { channels: params.channels } : {}),
+	};
+}
 
 /**
- * Normalize a validated call into its spawn list: the `tasks[]` batch when
- * provided, otherwise the single top-level spawn. The flat form's `isolated`
- * flag is only materialized when the caller sent one — `#runSpawn`
- * distinguishes an absent key from an explicit value.
+ * Normalize a validated call into its spawn list: the `tasks[]` batch (with
+ * `count`/`shardTasks` expanded) when provided, otherwise the single top-level spawn.
  */
-function resolveSpawnItems(params: TaskParams): TaskItem[] {
+function resolveSpawnItems(params: TaskParams): ExpandedTaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
-		return params.tasks;
+		return expandBatchTaskItems(params.tasks);
 	}
-	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
+	const item: ExpandedTaskItem = {
+		name: params.name,
+		agent: params.agent,
+		task: params.task,
+		taskFile: params.taskFile,
+	};
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
 	if ("effort" in params) item.effort = params.effort;
 	if ("isolated" in params) item.isolated = params.isolated;
+	if ("workspace" in params) item.workspace = params.workspace;
+	if ("forkFrom" in params) item.forkFrom = params.forkFrom;
+	if ("channels" in params) item.channels = params.channels;
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
 	if ("model" in params) item.model = params.model;
 	return [item];
 }
 
-interface ResolvedTaskItem extends TaskItem {
+interface ResolvedTaskItem extends ExpandedTaskItem {
 	taskFileSha256?: string;
 }
-
 interface SpawnParams extends TaskParams {
 	taskFileSha256?: string;
 }
@@ -417,7 +548,7 @@ function taskFilePath(session: ToolSession, taskFile: string): string | undefine
 		: taskFile;
 }
 
-async function resolveTaskFile(session: ToolSession, item: TaskItem): Promise<ResolvedTaskItem> {
+async function resolveTaskFile(session: ToolSession, item: ExpandedTaskItem): Promise<ResolvedTaskItem> {
 	if (item.taskFile === undefined) return item;
 	try {
 		const filePath = taskFilePath(session, item.taskFile);
@@ -437,7 +568,12 @@ async function resolveTaskFile(session: ToolSession, item: TaskItem): Promise<Re
 				throw new Error("contains invalid UTF-8");
 			}
 			if (!task.trim()) throw new Error("must contain non-empty task instructions");
-			return { ...item, task, taskFileSha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") };
+			const resolvedTask = item.shardSuffix ? `${task.trimEnd()}${item.shardSuffix}` : task;
+			return {
+				...item,
+				task: resolvedTask,
+				taskFileSha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+			};
 		} finally {
 			await file.close();
 		}
@@ -471,6 +607,21 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if ("effort" in item) spawn.effort = item.effort;
 	if ("sourceSession" in item) spawn.sourceSession = item.sourceSession;
 	if ("model" in item) spawn.model = item.model;
+	if ("forkFrom" in item) {
+		spawn.forkFrom = item.forkFrom;
+	} else if ("forkFrom" in params) {
+		spawn.forkFrom = params.forkFrom;
+	}
+	if ("channels" in item) {
+		spawn.channels = item.channels;
+	} else if ("channels" in params) {
+		spawn.channels = params.channels;
+	}
+	if (item.workspace !== undefined) {
+		spawn.workspace = item.workspace;
+	} else if ("workspace" in params) {
+		spawn.workspace = params.workspace;
+	}
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
@@ -1089,7 +1240,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			...spawnModelFields(params),
 			...this.#resultParams(params),
 			...this.#effortParams(params),
-			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+			...spawnSwarmFields(params),
+			...spawnIsolationFields(params),
 			blockedAgent: this.#blockedAgent,
 			enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
 			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
@@ -1574,7 +1726,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			// caller at a follow-up path that no longer exists. The template says
 			// nothing about the worktree itself: the runner keeps it when captured
 			// changes could not be written, and names that path in the result.
-			const isolated = spawnParams.isolated === true;
+			const isolated =
+				spawnParams.isolated === true || spawnParams.workspace === "share" || spawnParams.workspace === "branch";
 			const ref = aborted ? AgentRegistry.global().get(agentId) : undefined;
 			return `\n\n${prompt.render(taskFollowUpTemplate, {
 				agentId,
@@ -1957,7 +2110,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
-				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+				...spawnSwarmFields(params),
+				...spawnIsolationFields(params),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),

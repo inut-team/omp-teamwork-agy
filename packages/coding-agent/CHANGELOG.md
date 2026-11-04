@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added Antigravity v1.5.0 Swarm v2 and Browser v2 parity: per-spawn `workspace` (`"inherit"` | `"share"` | `"branch"`) worktree modes (enabled by default in `/boost`), `count` and `shardTasks[]` sharded worker groups, `forkFrom` sibling/coordinator transcript branching, `agent://channel/<topic>` scoped pub/sub coordination channels (`channels`, `read`, `write`, `?subscribe`/`?unsubscribe`), and structured `<outcome>` browser subagent verification.
 - Added Antigravity UI Design Studio and Browser HUD parity: `/ui` (`/design`, `/frontend`) and `/browser-agent` (`/browser-qa`, `/webview`, plus `/browser <url|task>`) slash commands, bundled `teamwork-ui-designer`, `teamwork-image-generator`, and `teamwork-browser` subagents, and default-enabled `generate_image` with workspace-relative `output_path` asset saving.
 - Added the default-off `providers.openaiResponsesWebsockets` setting for catalog-supported standard Responses models, independently of Codex; model/request `false` always disables it ([#17354](https://github.com/can1357/oh-my-pi/pull/17354) by [@TatsukiMeng](https://github.com/TatsukiMeng))
 - Pinned sessions show a pin beside their title in the status line and the band composer's title, and `/unpin [session id]` unpins a session ([#17848](https://github.com/can1357/oh-my-pi/pull/17848) by [@SuperUserA](https://github.com/SuperUserA))

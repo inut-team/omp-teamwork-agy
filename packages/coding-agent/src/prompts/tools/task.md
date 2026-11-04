@@ -12,7 +12,7 @@
 Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit. Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.
 {{#if batchEnabled}}Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.
 {{/if}}
-Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate via `write agent://<id>`{{/if}}. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
+Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate via `write agent://<id>` or scoped topic channels `write agent://channel/<topic>` (`read agent://channel/<topic>` reads the channel feed){{/if}}. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 
 # Inputs
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.
@@ -24,9 +24,11 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
 {{/if}}{{#if perCallModelEnabled}}`model`: one exact `provider/model-id[@upstream][:level]` string for this spawn only{{#if batchEnabled}}; per `tasks[]` item{{/if}}. `@upstream` pins an aggregator route and is part of the model identity. Only operator-approved models; no roles, arrays, globs or partial IDs. Approved: {{#list perCallModelAdvertisement.roles join=", "}}{{#list patterns join=", "}}`{{this}}`{{/list}} ({{role}}){{/list}}{{#if perCallModelAdvertisement.roles.length}}; {{/if}}{{#if perCallModelAdvertisement.parentModelWithheld}}{{else}}your own current model; {{/if}}the selected bundled/user agent's own configured model. A listed glob approves matching exact IDs; write the exact ID, NEVER the glob.{{#if perCallModelAdvertisement.allowlist.length}} Allowlist: {{#list perCallModelAdvertisement.allowlist join=", "}}`{{this}}`{{/list}} (must also be approved).{{/if}} An agent's `task.agentModelOverrides` entry or user-chosen effort conflicts with `model`. Omit unless needed. Requested model unavailable → stop and report; NEVER substitute another. Every request requires an approved model; retry fallback, context promotion and prewalk are off.
 {{/if}}{{#if structured}}`schemaMode`: default permissive warns after retries; strict fails.
-{{/if}}{{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
-{{else}}`isolated`: worktree; changes retained, not applied.
-{{/if}}{{/if}}Children start blank;{{#if ircEnabled}} parent IRC steers immediately;{{/if}} large payloads via `local://<path>`, NEVER inline.
+{{/if}}{{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent. `workspace`: `"inherit"` (shared checkout), `"share"` (CoW working copy + patch apply), or `"branch"` (CoW working copy + `--no-ff` branch merge).
+{{else}}`isolated`: worktree; changes retained, not applied. `workspace`: `"inherit"`, `"share"`, or `"branch"`.
+{{/if}}{{/if}}{{#if batchEnabled}}`count` / `shardTasks`: spawn `<name>-1`..`<name>-N` homogeneous replicas (`count`) or sharded slice workers (`shardTasks[]`, each paired with the shared `task` brief).
+{{/if}}{{#if ircEnabled}}`channels`: topic names to auto-subscribe the child to (`agent://channel/<topic>`).
+{{/if}}`forkFrom`: roster name of an existing sibling agent (or `"coordinator"`) to branch conversation history from; otherwise children start blank;{{#if ircEnabled}} parent IRC steers immediately;{{/if}} large payloads via `local://<path>`, NEVER inline.
 
 # Format
 {{#if batchEnabled}}`context`: shared (`# Goal`, `# Contract` interfaces); NEVER repeat per task.

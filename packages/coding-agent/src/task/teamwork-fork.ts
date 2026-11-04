@@ -108,8 +108,11 @@ async function runTeamworkForkTuiCore(
 	const sessionDir = parentFile.slice(0, -6);
 
 	const settings = isPreview
-		? createSubagentSettings(ctx.settings)
+		? createSubagentSettings(ctx.settings, {
+				"task.isolation.enabled": true,
+			})
 		: createSubagentSettings(ctx.settings, {
+				"task.isolation.enabled": true,
 				"task.agentModelOverrides": {
 					"teamwork-fork": "",
 				},
@@ -333,8 +336,11 @@ async function runTeamworkForkAcpCore(
 	});
 
 	const settings = isPreview
-		? createSubagentSettings(runtime.settings)
+		? createSubagentSettings(runtime.settings, {
+				"task.isolation.enabled": true,
+			})
 		: createSubagentSettings(runtime.settings, {
+				"task.isolation.enabled": true,
 				"task.agentModelOverrides": {
 					"teamwork-fork": "",
 				},

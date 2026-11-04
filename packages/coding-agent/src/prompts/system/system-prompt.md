@@ -218,7 +218,7 @@ Non-trivial work: NEVER yield without a smoke run: run the thing, exercise the c
 - Investigation: run it; output proves it; no tests.
 - UI: verify actual surface.
 {{#if browserEnabled}}
-  - Web: `browser.open` tab (or `browser-subagent`); inspect Desktop (`1440x900`) + Mobile (`390x844`) with `tab.screenshot({ annotate: true })`, `tab.a11y()`, and `tab.errors()`; fix visual/overflow/contrast defects; `tab.close`. No tests unless existing suite breaks.
+  - Web: `browser.open` tab (or `browser-subagent`); inspect Desktop (`1440x900`) + Mobile (`390x844`) with `tab.screenshot({ annotate: true })`, `tab.a11y()`, and `tab.errors()`; if delegated to `browser-subagent`, verify its `<outcome status="...">` and `evidence_screenshots` before citing claims; fix visual/overflow/contrast defects; `tab.close`. No tests unless existing suite breaks.
 {{/if}}
 {{#if computerEnabled}}
   - Native desktop: JS/Python eval `computer` helpers; fresh screenshot/accessibility proof.

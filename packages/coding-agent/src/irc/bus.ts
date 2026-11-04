@@ -14,6 +14,7 @@ import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { type AgentLifecycleApi, AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
+import { ChannelBoard } from "./channels";
 
 interface IrcWaiter {
 	from?: string;
@@ -73,6 +74,7 @@ export class IrcBus implements IrcBusApi {
 	/** Reset the global bus. Test-only. */
 	static resetGlobalForTests(): void {
 		IrcBus.#global = undefined;
+		ChannelBoard.resetGlobalForTests();
 	}
 
 	/**

@@ -26,6 +26,14 @@ import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import { type AgentRef, AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { executeSend, isIrcEnabled } from "../irc/messaging";
+import {
+	ChannelBoard,
+	formatChannelFeedMarkdown,
+	formatChannelListMarkdown,
+	normalizeChannelTopic,
+	publishChannelMessage,
+	resolveChannelArtifactsDir,
+} from "../irc/channels";
 import agentPromptDoc from "../prompts/internal-urls/agent.md" with { type: "text" };
 import agentProgressTemplate from "../prompts/tools/agent-url-progress.md" with { type: "text" };
 import agentSupersededTemplate from "../prompts/tools/agent-url-superseded.md" with { type: "text" };
@@ -162,7 +170,7 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	async locate(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
 		const outputId = url.rawHost || url.hostname;
 		if (!outputId) throw new Error("agent:// URL requires an output ID: agent://<id>");
-		if (outputId === "all" || hasPathExtraction(url)) return null;
+		if (outputId === "all" || outputId === "channel" || hasPathExtraction(url)) return null;
 		if (isSuperseded(context?.agentRegistry ?? AgentRegistry.global(), outputId)) return null;
 		const dirs = await this.#outputDirs(context);
 		if (dirs.length === 0) return null;
@@ -184,6 +192,69 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		}
 		const to = url.rawHost || url.hostname;
 		if (!to) throw new Error("agent:// URL requires a recipient: agent://<id>");
+		if (to === "channel") {
+			const segments = url.pathname.split("/").filter(Boolean);
+			if (segments.length !== 1) {
+				throw new Error("agent://channel requires a single topic name: agent://channel/<topic>");
+			}
+			const topic = normalizeChannelTopic(segments[0]!);
+			const subscribe = url.searchParams.has("subscribe");
+			const unsubscribe = url.searchParams.has("unsubscribe");
+			if (subscribe && unsubscribe) {
+				throw new Error("agent://channel cannot combine ?subscribe and ?unsubscribe.");
+			}
+			if (url.searchParams.has("progress")) {
+				throw new Error("agent://channel posts cannot be ?progress updates.");
+			}
+			const artifactsDir = resolveChannelArtifactsDir({
+				artifactsDir: session.getArtifactsDir?.(),
+				sessionFile: session.getSessionFile?.(),
+			});
+			if (unsubscribe) {
+				const state = await ChannelBoard.global().unsubscribe(topic, senderId, artifactsDir);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Unsubscribed ${senderId} from #${state.channel} (${state.subscribers.length} subscriber(s) remaining).`,
+						},
+					],
+				};
+			}
+			if (subscribe && !content.trim()) {
+				const state = await ChannelBoard.global().subscribe(topic, senderId, artifactsDir);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Subscribed ${senderId} to #${state.channel} (${state.subscribers.length} subscriber(s)).`,
+						},
+					],
+				};
+			}
+			if (!content.trim()) {
+				throw new Error("agent://channel messages require non-empty content (or pass ?subscribe / ?unsubscribe).");
+			}
+			const channelResult = await publishChannelMessage(
+				{
+					registry,
+					senderId,
+					sessionFileHint: session.getSessionFile?.(),
+					artifactsDir,
+				},
+				{ channel: topic, message: content },
+			);
+			return {
+				content: [
+					{
+						type: "text",
+						text: channelResult.content.find(item => item.type === "text")?.text ?? "Channel post failed.",
+					},
+				],
+				details: { message: channelResult.details },
+				isError: channelResult.isError,
+			};
+		}
 		if (hasPathExtraction(url)) {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
@@ -212,7 +283,32 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		if (!outputId) {
 			throw new Error("agent:// URL requires an output ID: agent://<id>");
 		}
-
+		if (outputId === "channel") {
+			const sessionArtifactsDir = context?.session?.getArtifactsDir?.();
+			const baseDirs = await this.#outputDirs(context);
+			const dirs =
+				sessionArtifactsDir && !baseDirs.includes(sessionArtifactsDir)
+					? [sessionArtifactsDir, ...baseDirs]
+					: baseDirs;
+			const segments = url.pathname.split("/").filter(Boolean);
+			if (segments.length > 1) {
+				throw new Error("agent://channel URLs take at most one topic segment: agent://channel/<topic>");
+			}
+			if (segments.length === 0) {
+				const channels = await ChannelBoard.global().listChannels(dirs);
+				return {
+					url: url.href,
+					content: formatChannelListMarkdown(channels),
+					contentType: "text/markdown",
+				};
+			}
+			const feed = await ChannelBoard.global().readFeed(segments[0]!, dirs);
+			return {
+				url: url.href,
+				content: formatChannelFeedMarkdown(feed),
+				contentType: "text/markdown",
+			};
+		}
 		const extraction = hasPathExtraction(url);
 
 		const dirs = await this.#outputDirs(context);

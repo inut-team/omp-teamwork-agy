@@ -57,6 +57,8 @@ import { generateTaskName, sanitizeAgentId } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import { isBundledSeance, prepareSeance, type PreparedSeanceSession } from "./seance";
+import { ChannelBoard, normalizeChannelTopic } from "../irc/channels";
+import { prepareForkFromSession, type PreparedForkSession } from "./fork-from";
 import { SEANCE_AGENT_NAME } from "./seance-policy";
 import { type AgentDefinition, canSpawnAtDepth } from "./types";
 import type {
@@ -192,6 +194,10 @@ export interface StructuredSubagentRequest {
 	customTools?: CustomTool[];
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
+	/** Roster name of an existing sibling agent (or `"coordinator"`) to branch conversation history from. */
+	forkFrom?: string;
+	/** Scoped pub/sub channels (`agent://channel/<topic>`) to auto-subscribe this child to on launch. */
+	channels?: string[];
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	/** See {@link ExecutorOptions.onToolResult}. */
@@ -207,6 +213,10 @@ export interface EffectiveSubagentPolicy {
 	modelOverride?: string[];
 	/** Prepared read-only source fork for the bundled seance agent. */
 	preparedSession?: PreparedSeanceSession;
+	/** Prepared sibling/coordinator transcript fork (`forkFrom`), keeping normal worker tools and IRC. */
+	forkSession?: PreparedForkSession;
+	/** Normalized pub/sub channels to auto-subscribe the spawned child to. */
+	channels?: string[];
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;
 	/** Extension routing note explaining a `before_subagent_spawn` model replacement. */
@@ -542,6 +552,42 @@ export async function resolveEffectiveSubagentPolicy(
 			);
 		}
 	}
+	let preparedFork: PreparedForkSession | undefined;
+	if (request.forkFrom !== undefined) {
+		try {
+			preparedFork = await prepareForkFromSession({
+				session: request.session,
+				forkFrom: request.forkFrom,
+				agent,
+				planMode,
+				hasSourceSession: request.sourceSession !== undefined,
+			});
+		} catch (error) {
+			throw new StructuredSubagentError(
+				"preflight",
+				error instanceof Error ? error.message : "Invalid `forkFrom` target.",
+				{ cause: error },
+			);
+		}
+	}
+	let normalizedChannels: string[] | undefined;
+	if (request.channels?.length) {
+		if (planMode) {
+			throw new StructuredSubagentError(
+				"preflight",
+				"Channel subscriptions (`channels`) are unavailable in plan mode.",
+			);
+		}
+		try {
+			normalizedChannels = [...new Set(request.channels.map(raw => normalizeChannelTopic(raw)))];
+		} catch (error) {
+			throw new StructuredSubagentError(
+				"preflight",
+				error instanceof Error ? error.message : "Invalid `channels` topic.",
+				{ cause: error },
+			);
+		}
+	}
 
 	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
 	// An agent declaring `structured: true` keeps its result contract when the caller opts out (`task.structured` off).
@@ -625,6 +671,8 @@ export async function resolveEffectiveSubagentPolicy(
 		effectiveAgent,
 		modelOverride,
 		preparedSession: preparedSeance?.session,
+		forkSession: preparedFork,
+		channels: normalizedChannels,
 		modelRole,
 		serviceTierOverride,
 		compactionThresholdOverride,
@@ -769,6 +817,7 @@ function buildExecutorOptions(
 		task: renderSubagentUserPrompt(request.assignment),
 		assignment: request.assignment.trim(),
 		preparedSession,
+		forkSession: policy.forkSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
@@ -1021,6 +1070,10 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
+		if (policy.channels?.length) {
+			const channelArtifactsDir = lease.sessionFile ? lease.artifactsDir : null;
+			await ChannelBoard.global().subscribeMany(policy.channels, id, channelArtifactsDir);
+		}
 		if (policy.preparedSession === undefined) await refreshSkillsForAutoload(request.session, policy.agent);
 		const baseOptions = buildExecutorOptions(request, policy, lease, id);
 		baseOptions.onCleanupDeferred = completion => {

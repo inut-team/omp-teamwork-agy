@@ -135,6 +135,7 @@ import {
 } from "./types";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { PreparedSeanceSession } from "./seance";
+import type { PreparedForkSession } from "./fork-from";
 import {
 	type AgentProgress,
 	type SingleResult,
@@ -441,6 +442,7 @@ export interface ExecutorOptions {
 	task: string;
 	assignment?: string;
 	preparedSession?: PreparedSeanceSession;
+	forkSession?: PreparedForkSession;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
 	/**
@@ -4022,6 +4024,7 @@ interface SubagentSessionSpec {
 		| "onFirstChatDispatch"
 	>;
 	preparedSession?: Pick<PreparedSeanceSession, "promptSuffix">;
+	forkSession?: Pick<PreparedForkSession, "promptSuffix">;
 	prompt: SubagentPromptInputs;
 }
 
@@ -4096,7 +4099,13 @@ function buildSubagentSessionOptions(
 			// `<project-context>` block so spawns of the same agent share the static
 			// prompt prefix as a cache hit.
 			const seancePrompt = spec.preparedSession?.promptSuffix(inputs.model);
-			return [...defaultPrompt, subagentPrompt, ...(seancePrompt ? [seancePrompt] : [])];
+			const forkPrompt = spec.forkSession?.promptSuffix(inputs.id);
+			return [
+				...defaultPrompt,
+				subagentPrompt,
+				...(seancePrompt ? [seancePrompt] : []),
+				...(forkPrompt ? [forkPrompt] : []),
+			];
 		},
 	};
 }
@@ -4390,6 +4399,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		onProgress,
 	} = options;
 	const preparedSession = options.preparedSession;
+	const forkSession = options.forkSession;
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const structured = options.structured !== false;
 	const startTime = Date.now();
@@ -4769,7 +4779,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const fork = preparedSession?.fork;
-			if (fork && !subtaskSessionFile) {
+			if ((fork || forkSession) && !subtaskSessionFile) {
 				throw new Error("The prepared session fork requires a persisted child session file.");
 			}
 			const sessionManagerPromise = fork
@@ -4780,14 +4790,22 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						resetInheritedCost: true,
 						repairInterruptedTail: true,
 					})
-				: sessionFile
-					? SessionManager.open(sessionFile, undefined, undefined, {
-							initialCwd: effectiveCwd,
-							parentSession: options.sessionFile ?? undefined,
+				: forkSession
+					? SessionManager.forkFrom(forkSession.sourceFile, effectiveCwd, undefined, undefined, {
+							copyArtifacts: false,
 							suppressBreadcrumb: true,
+							sessionFile: subtaskSessionFile,
+							resetInheritedCost: true,
+							repairInterruptedTail: true,
 						})
-					: Promise.resolve(SessionManager.inMemory(effectiveCwd));
-			if (preparedSession) pendingSessionManager = sessionManagerPromise;
+					: sessionFile
+						? SessionManager.open(sessionFile, undefined, undefined, {
+								initialCwd: effectiveCwd,
+								parentSession: options.sessionFile ?? undefined,
+								suppressBreadcrumb: true,
+							})
+						: Promise.resolve(SessionManager.inMemory(effectiveCwd));
+			if (preparedSession || forkSession) pendingSessionManager = sessionManagerPromise;
 			// Setup below can fail before this promise's consumption boundary.
 			// Observe rejection immediately while preserving it for the later await.
 			sessionManagerPromise.catch(() => {});
@@ -4951,6 +4969,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					...(preparedSession ? seanceIsolationOptions(effectiveCwd) : {}),
 				},
 				preparedSession: preparedSession ? { promptSuffix: preparedSession.promptSuffix } : undefined,
+				forkSession: forkSession ? { promptSuffix: forkSession.promptSuffix } : undefined,
 				prompt: {
 					id,
 					model: progress.resolvedModel,
@@ -4970,7 +4989,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			};
 
 			const sessionManager = await awaitAbortable(sessionManagerPromise);
-			if (preparedSession) openedSessionManager = sessionManager;
+			if (preparedSession || forkSession) openedSessionManager = sessionManager;
 			if (options.parentArtifactManager && !preparedSession) {
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
 			}
@@ -4979,7 +4998,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 
 			// A seance fork inherits the source's model roles; they describe the
 			// source run, not this consult, so the consult still pins its own chain.
-			const hasExistingModelRole = !preparedSession && sessionManager.getLastModelChangeRole() !== undefined;
+			const hasExistingModelRole =
+				!preparedSession && !forkSession && sessionManager.getLastModelChangeRole() !== undefined;
 			// Subscribe before the builder mints proxies so a manager change during
 			// session startup is replayed on bind instead of lost.
 			const mcpFollower = mcpManager

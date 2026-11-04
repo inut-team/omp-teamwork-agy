@@ -2261,6 +2261,16 @@ export interface TaskItem {
 	tools?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Workspace isolation mode (`"inherit"` shared checkout, `"share"` CoW working copy + patch apply, `"branch"` CoW working copy + branch merge). */
+	workspace?: "inherit" | "share" | "branch";
+	/** Number of homogeneous worker replicas (`<name>-1`..`<name>-<count>`) sharing this role and brief. */
+	count?: number;
+	/** Per-worker slice targets (`<name>-1`..`<name>-<len>`), each combined with the shared `task` brief. */
+	shardTasks?: string[];
+	/** Roster name of an existing sibling agent (or `"coordinator"`) whose conversation history this child forks from. */
+	forkFrom?: string;
+	/** Pub/sub topic channels (`agent://channel/<topic>`) to auto-subscribe this child to on launch. */
+	channels?: string[];
 }
 
 /**
@@ -2298,6 +2308,12 @@ export interface TaskParams {
 	context?: string;
 	/** Run in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Workspace isolation mode (flat form; per-item in batch form). */
+	workspace?: "inherit" | "share" | "branch";
+	/** Roster name of an existing sibling agent or `"coordinator"` to fork conversation history from (flat form). */
+	forkFrom?: string;
+	/** Pub/sub topic channels (`agent://channel/<topic>`) to auto-subscribe the child to (flat form). */
+	channels?: string[];
 }
 
 /**

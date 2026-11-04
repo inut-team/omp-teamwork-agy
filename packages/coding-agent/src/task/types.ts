@@ -72,6 +72,8 @@ function keepSeanceItemKeys<T, I>(item: FluentType<T, I>): FluentType<unknown, I
 	});
 }
 
+const workspaceRule = '"inherit" | "share" | "branch"' as const;
+
 export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
@@ -81,6 +83,10 @@ export const taskItemSchema = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"model?": "string",
+	"count?": "number",
+	"shardTasks?": "string[]",
+	"forkFrom?": "string",
+	"channels?": "string[]",
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
@@ -93,6 +99,11 @@ const taskItemSchemaIsolated = type({
 	"tools?": "string[]",
 	"model?": "string",
 	"isolated?": "boolean",
+	"workspace?": workspaceRule,
+	"count?": "number",
+	"shardTasks?": "string[]",
+	"forkFrom?": "string",
+	"channels?": "string[]",
 	"+": "delete",
 });
 
@@ -106,6 +117,9 @@ export const taskSchema = type({
 	"tools?": "string[]",
 	"model?": "string",
 	"isolated?": "boolean",
+	"workspace?": workspaceRule,
+	"forkFrom?": "string",
+	"channels?": "string[]",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -117,6 +131,8 @@ const taskSchemaNoIsolation = type({
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
 	"model?": "string",
+	"forkFrom?": "string",
+	"channels?": "string[]",
 	"+": "delete",
 });
 function guardBatchAgent(schema: BaseType): BaseType {
@@ -193,6 +209,16 @@ function createTaskSchema(options: {
 	// `model` is always declared, and preflight decides whether a per-call model
 	// is allowed; seance widens it to a list.
 	const seanceFields = { "model?": "string", ...options.seanceFields };
+	const batchCoordinationFields = {
+		"count?": "number",
+		"shardTasks?": "string[]",
+		"forkFrom?": "string",
+		"channels?": "string[]",
+	} as const;
+	const singleCoordinationFields = {
+		"forkFrom?": "string",
+		"channels?": "string[]",
+	} as const;
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
@@ -205,6 +231,8 @@ function createTaskSchema(options: {
 				...toolsField,
 				...seanceFields,
 				"isolated?": "boolean",
+				"workspace?": workspaceRule,
+				...batchCoordinationFields,
 				"+": "delete",
 			});
 			return guardBatchAgent(
@@ -224,6 +252,7 @@ function createTaskSchema(options: {
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
+			...batchCoordinationFields,
 			"+": "delete",
 		});
 		return guardBatchAgent(
@@ -245,6 +274,8 @@ function createTaskSchema(options: {
 			...toolsField,
 			...seanceFields,
 			"isolated?": "boolean",
+			"workspace?": workspaceRule,
+			...singleCoordinationFields,
 			"+": "delete",
 		});
 	}
@@ -257,6 +288,7 @@ function createTaskSchema(options: {
 		...schemaFields,
 		...toolsField,
 		...seanceFields,
+		...singleCoordinationFields,
 		"+": "delete",
 	});
 }
