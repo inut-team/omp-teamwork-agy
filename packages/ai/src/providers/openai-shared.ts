@@ -1995,6 +1995,57 @@ function adaptResponsesReplayItemsForModel(
 	return changed ? adapted : input;
 }
 
+/**
+ * Keep native `openaiResponsesHistory` tool-call `call_id`s aligned with the
+ * post-dedup `toolCall` blocks on `assistantMsg.content`. When `agent-loop`'s
+ * `ensureUniqueToolCallIds` or `transformMessages`'s `deduplicateToolCallIds`
+ * re-keys a reused call id (`call_X` -> `call_X_dup1`), the paired
+ * `ToolResultMessage` receives the re-keyed id while `providerPayload.items`
+ * still holds the raw wire `call_X`. Replaying the un-rekeyed `call_id` leaves
+ * both the call and its result unpaired, causing `repairOrphanResponsesToolCalls`
+ * and `repairOrphanResponsesToolOutputs` to replace the real result with an
+ * interrupted placeholder plus an `[Orphan tool result]` assistant note.
+ */
+function syncResponsesReplayToolCallIds(
+	input: ResponseInput,
+	assistantContent: AssistantMessage["content"],
+): ResponseInput {
+	const toolCallBlocks = assistantContent.filter((block): block is ToolCall => block.type === "toolCall");
+	if (toolCallBlocks.length === 0) return input;
+	const callItemIndices: number[] = [];
+	for (let i = 0; i < input.length; i++) {
+		if (responsesToolCallKind(input[i].type) !== undefined) {
+			callItemIndices.push(i);
+		}
+	}
+	if (callItemIndices.length === 0) return input;
+	const offset = Math.max(0, callItemIndices.length - toolCallBlocks.length);
+	let changed = false;
+	const synced = input.slice();
+	for (let k = 0; k < toolCallBlocks.length && offset + k < callItemIndices.length; k++) {
+		const itemIndex = callItemIndices[offset + k]!;
+		const item = synced[itemIndex]!;
+		if (!("call_id" in item) || typeof item.call_id !== "string") continue;
+		const normalized = normalizeResponsesToolCallId(
+			toolCallBlocks[k]!.id,
+			item.type === "custom_tool_call" ? "ctc" : "fc",
+		);
+		if (item.call_id === normalized.callId) continue;
+		changed = true;
+		const prevCallId = item.call_id;
+		synced[itemIndex] = {
+			...item,
+			call_id: normalized.callId,
+			...("id" in item &&
+			typeof item.id === "string" &&
+			(item.id === `fc_${prevCallId}` || item.id === `ctc_${prevCallId}`)
+				? { id: normalized.itemId }
+				: {}),
+		} as ResponseInput[number];
+	}
+	return changed ? synced : input;
+}
+
 export interface BuildResponsesInputOptions<TApi extends Api> {
 	model: Model<TApi>;
 	context: Context;
@@ -2287,7 +2338,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				const sanitizedHistoryItems = rawSanitizedHistoryItems
 					? ensureRequiredResponsesReasoningReplay(
 							adaptResponsesReplayItemsForModel(
-								rawSanitizedHistoryItems,
+								syncResponsesReplayToolCallIds(rawSanitizedHistoryItems, assistantMsg.content),
 								supportsCustomToolCalls,
 								customToolWireNameMap,
 								options.model.supportsComputerUse === true,

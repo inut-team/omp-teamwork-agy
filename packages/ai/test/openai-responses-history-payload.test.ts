@@ -2208,4 +2208,111 @@ describe("OpenAI responses history payload", () => {
 		expect(orphanNote(strictOverridePayload.input)?.content).toContain("[Orphan read result;");
 		expect(orphanNote(nonStrictOverridePayload.input)?.content).toContain("[Orphan tool result;");
 	});
+
+	it("synchronizes native providerPayload function_call call_id with deduplicated toolCall block id (_dup1)", () => {
+		const model = getOpenAIReasoningModel("openai", "gpt-5-mini");
+		const turn1Assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call_591934|fc_call_591934", name: "read", arguments: { path: "a.ts" } }],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5-mini",
+			usage: issue5002ZeroUsage,
+			stopReason: "toolUse",
+			providerPayload: createOpenAIResponsesHistoryPayload(
+				"openai",
+				[
+					{
+						id: "fc_call_591934",
+						type: "function_call",
+						call_id: "call_591934",
+						name: "read",
+						arguments: '{"path":"a.ts"}',
+					},
+				],
+				true,
+			),
+			timestamp: 1,
+		};
+		const turn1Result = {
+			role: "toolResult" as const,
+			toolCallId: "call_591934|fc_call_591934",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "contents of a.ts" }],
+			isError: false,
+			timestamp: 2,
+		};
+		// Turn 2: upstream re-emitted call_591934; agent-loop / transformMessages re-keyed
+		// block.id and toolResult.toolCallId to call_591934_dup1 while providerPayload.items
+		// still held the raw wire call_591934.
+		const turn2Assistant: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "call_591934_dup1|fc_call_591934_dup1",
+					name: "read",
+					arguments: { path: "b.ts" },
+				},
+			],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5-mini",
+			usage: issue5002ZeroUsage,
+			stopReason: "toolUse",
+			providerPayload: createOpenAIResponsesHistoryPayload(
+				"openai",
+				[
+					{
+						id: "fc_call_591934",
+						type: "function_call",
+						call_id: "call_591934",
+						name: "read",
+						arguments: '{"path":"b.ts"}',
+					},
+				],
+				true,
+			),
+			timestamp: 3,
+		};
+		const turn2Result = {
+			role: "toolResult" as const,
+			toolCallId: "call_591934_dup1|fc_call_591934_dup1",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "contents of b.ts" }],
+			isError: false,
+			timestamp: 4,
+		};
+
+		const input = buildResponsesInput({
+			model,
+			context: {
+				messages: [
+					{ role: "user", content: "read both files", timestamp: 0 },
+					turn1Assistant,
+					turn1Result,
+					turn2Assistant,
+					turn2Result,
+					{ role: "user", content: "continue", timestamp: 5 },
+				],
+			},
+			strictResponsesPairing: true,
+			supportsImageDetailOriginal: true,
+			nativeHistory: { replay: true, filterReasoning: false },
+			repairOrphanOutputs: true,
+		});
+
+		const wire = JSON.stringify(input);
+		expect(wire).not.toContain("[No tool output recorded");
+		expect(wire).not.toContain("[Orphan");
+		expect(listResponsesToolItems(input)).toEqual([
+			["function_call", "call_591934", "read"],
+			["function_call_output", "call_591934", undefined],
+			["function_call", "call_591934_dup1", "read"],
+			["function_call_output", "call_591934_dup1", undefined],
+		]);
+		expect(findResponsesInputItemByCallId(input, "function_call_output", "call_591934_dup1")?.output).toBe(
+			"contents of b.ts",
+		);
+	});
 });

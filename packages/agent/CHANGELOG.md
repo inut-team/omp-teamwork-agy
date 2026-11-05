@@ -8,6 +8,7 @@
 - Added `Agent.queuedMessageGate`, a synchronous `QueuedMessageGate` consulted before every queued-message delivery batch (it can drop candidates) and told when claimed messages go back undelivered
 ### Fixed
 
+- Fixed `ensureUniqueToolCallIds` leaving `openaiResponsesHistory` `providerPayload.items` on the original un-deduplicated `call_id` when re-keying a reused tool call id across turns
 - Fixed steering and follow-up queue notifications observing a batch before its preparation claim was installed and missing the transition to delivery, leaving pending-message snapshots stale after asynchronous preparation.
 
 ## [18.16.0] - 2026-11-02

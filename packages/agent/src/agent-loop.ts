@@ -3060,9 +3060,39 @@ function ensureUniqueToolCallIds(message: ToolCallIdsRepairedCarrier, dispatched
 				candidate = mintToolCallId();
 			} while (seen.has(candidate) || reserved.has(candidate) || dispatchedIds.has(candidate));
 		}
+		const prevId = block.id;
 		block.id = candidate;
 		seen.add(candidate);
 		dispatchedIds.add(candidate);
+		if (
+			prevId &&
+			message.providerPayload?.type === "openaiResponsesHistory" &&
+			Array.isArray(message.providerPayload.items)
+		) {
+			const prevCallId = prevId.split("|")[0];
+			const nextParts = candidate.split("|");
+			const nextCallId = nextParts[0] || candidate;
+			const nextItemId = nextParts[1];
+			let updated = false;
+			message.providerPayload = {
+				...message.providerPayload,
+				items: message.providerPayload.items.map(rawItem => {
+					if (updated || !rawItem || typeof rawItem !== "object") return rawItem;
+					const item = rawItem as Record<string, unknown>;
+					if (item.call_id !== prevCallId) return rawItem;
+					updated = true;
+					return {
+						...item,
+						call_id: nextCallId,
+						...(typeof item.id === "string" &&
+						nextItemId &&
+						(item.id === `fc_${prevCallId}` || item.id === `ctc_${prevCallId}`)
+							? { id: nextItemId }
+							: {}),
+					};
+				}),
+			};
+		}
 	}
 	message[kToolCallIdsRepaired] = true;
 }
