@@ -381,18 +381,11 @@ export function supportsAntigravityLongDecodeModel(
 	if (!model) return false;
 	if (model.identity?.class === "anthropic") return false;
 	const rawId = String(wireModelId ?? model.requestModelId ?? model.id ?? "").toLowerCase();
-	if (!rawId || rawId.includes("claude") || rawId.includes("image") || rawId.includes("imagen")) {
+	if (!rawId || rawId.includes("claude") || rawId.includes("image") || rawId.includes("imagen") || rawId.includes("flash")) {
 		return false;
 	}
-	if (model.provider === "google-antigravity" || model.provider === "google-gemini-cli") {
-		return rawId.includes("gemini") || model.identity?.class === "gemini";
-	}
-	if (model.provider === "apphub" && model.identity?.class === "gemini") {
-		return true;
-	}
-	return rawId.startsWith("ag/gemini-") || rawId.includes("gemini-4-argon") || rawId.includes("gemini-3.8-flash");
+	return rawId.includes("gemini-4") || rawId.includes("argon");
 }
-
 export function isContinuationBudgetExhaustedError(errorOrMessage: unknown): boolean {
 	const raw =
 		typeof errorOrMessage === "string"

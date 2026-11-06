@@ -1039,7 +1039,7 @@ export const cfgProvidersAntigravityLongDecode = register({
 	id: "providers.antigravityLongDecode",
 	type: "enum",
 	values: ANTIGRAVITY_LONG_DECODE_VALUES,
-	default: "auto",
+	default: "off",
 	env: {
 		name: "OMP_ANTIGRAVITY_LONG_DECODE",
 		parse: parseAntigravityLongDecodeEnv,
