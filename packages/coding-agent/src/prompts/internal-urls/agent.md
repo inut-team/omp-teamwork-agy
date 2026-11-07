@@ -1,1 +1,1 @@
-`agent://<id>`: latest completed output (status + progress while unpublished); nested IDs dotted, `/key/index` JSON path; write = message, `agent://all` broadcast, `agent://channel/<topic>` scoped pub/sub channel (`read` feed, `write` post, `?subscribe`/`?unsubscribe`).
+`agent://<id>`: latest completed output (status + progress while unpublished); nested IDs dotted, `/key/index` JSON path; write = message{{#unless subagent}}, `agent://all` broadcast only{{/unless}}, `agent://channel/<topic>` scoped pub/sub channel (`read` feed, `write` post, `?subscribe`/`?unsubscribe`).

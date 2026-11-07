@@ -381,7 +381,13 @@ export function supportsAntigravityLongDecodeModel(
 	if (!model) return false;
 	if (model.identity?.class === "anthropic") return false;
 	const rawId = String(wireModelId ?? model.requestModelId ?? model.id ?? "").toLowerCase();
-	if (!rawId || rawId.includes("claude") || rawId.includes("image") || rawId.includes("imagen") || rawId.includes("flash")) {
+	if (
+		!rawId ||
+		rawId.includes("claude") ||
+		rawId.includes("image") ||
+		rawId.includes("imagen") ||
+		rawId.includes("flash")
+	) {
 		return false;
 	}
 	return rawId.includes("gemini-4") || rawId.includes("argon");

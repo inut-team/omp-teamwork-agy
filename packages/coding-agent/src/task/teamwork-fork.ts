@@ -117,10 +117,11 @@ async function runTeamworkForkTuiCore(
 					"teamwork-fork": "",
 				},
 			});
-	const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
 	const enableLsp = cfgTaskEnableLsp.get(ctx.settings) !== false;
 	const agentRegistry = AgentRegistry.global();
 	const cloneId = `${clonePrefix}-${Snowflake.next()}`;
+	if (mcpManager) mcpManager.openToolScope(cloneId);
+	const customTools = mcpManager ? createMCPProxyTools(mcpManager, cloneId) : undefined;
 	const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
 	const label = `${commandName} ${previewWork(trimmedWork)}`;
 

@@ -12,7 +12,7 @@
 Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit. Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.
 {{#if batchEnabled}}Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.
 {{/if}}
-Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate via `write agent://<id>` or scoped topic channels `write agent://channel/<topic>` (`read agent://channel/<topic>` reads the channel feed){{/if}}. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
+Shared edits need one integration owner; give each task its files{{#if ircEnabled}} (siblings coordinate via `write agent://<id>` or scoped topic channels `write agent://channel/<topic>` / `read agent://channel/<topic>`){{/if}}. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 
 # Inputs
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.

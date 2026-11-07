@@ -15,7 +15,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import type { CoordinationDetails } from "@oh-my-pi/pi-tui/tools/wait";
 import { isEnoent, Snowflake } from "@oh-my-pi/pi-utils";
-import { type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { IrcBus } from "./bus";
 
@@ -354,20 +354,16 @@ export async function publishChannelMessage(
 		}
 	}
 
-	const suppressRelay = targets.includes(MAIN_AGENT_ID);
 	const bus = IrcBus.global();
 	const taggedBody = `[#${topic}] ${body}`;
 	const receipts: IrcDeliveryReceipt[] = await Promise.all(
 		targets.map(target =>
-			bus.send(
-				{
-					from: senderId,
-					to: target,
-					body: taggedBody,
-					broadcast: true,
-				},
-				{ suppressRelay },
-			),
+			bus.send({
+				from: senderId,
+				to: target,
+				body: taggedBody,
+				broadcast: true,
+			}),
 		),
 	);
 	const delivered = receipts.filter(receipt => receipt.outcome !== "failed");

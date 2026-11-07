@@ -59,7 +59,7 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
-import type { MCPManagerApi } from "../mcp/manager";
+import type { MCPManagerApi, MCPToolScope } from "../mcp/manager";
 import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
@@ -85,7 +85,7 @@ import { isLocalAgentSession } from "../session/agent-session-handle";
 import { type ArtifactManagerApi, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
-import type { CostGateApi } from "../session/cost-gate";
+import { type CostCapRefusal, CostCapError, type CostGateApi } from "../session/cost-gate";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
@@ -570,6 +570,8 @@ export interface ExecutorOptions {
 	 */
 	preloadedCustomToolPaths?: ToolPathWithSource[];
 	mcpManager?: MCPManagerApi;
+	/** The spawning session's view of {@link mcpManager}; the child's view starts from it. */
+	mcpToolScope?: MCPToolScope;
 	/** User-authorized model agents available to this child and its descendants. */
 	inheritedSessionAgents?: CreateAgentSessionOptions["inheritedSessionAgents"];
 	authStorage?: AuthStorage;
@@ -988,7 +990,7 @@ function getUsageTokens(usage: unknown): number {
 }
 
 /**
- * Create proxy tools that reuse the parent's MCP connections.
+ * Create proxy tools that reuse the parent's MCP connections, as `scope` sees them.
  *
  * Each proxy delegates to the current source `MCPTool`/`DeferredMCPTool` rather
  * than rebuilding a raw `tools/call` request, so the Task/subagent path shares
@@ -1001,8 +1003,8 @@ function getUsageTokens(usage: unknown): number {
  * including timeout=0; a second Task deadline would silently cap longer calls.
  * The proxy only races caller cancellation around source execution.
  */
-export function createMCPProxyTools(mcpManager: MCPManagerApi): CustomTool[] {
-	return mcpManager.getTools().map(tool => {
+export function createMCPProxyTools(mcpManager: MCPManagerApi, scope: MCPToolScope): CustomTool[] {
+	return mcpManager.getTools(scope).map(tool => {
 		const serverName = tool.mcpServerName ?? "";
 		const mcpToolName = tool.mcpToolName ?? "";
 		return {
@@ -1020,7 +1022,7 @@ export function createMCPProxyTools(mcpManager: MCPManagerApi): CustomTool[] {
 				// Re-resolve by raw MCP metadata so a reconnect that replaced the
 				// source instance is picked up; the display name alone is not enough.
 				const source = mcpManager
-					.getTools()
+					.getTools(scope)
 					.find(t => t.mcpServerName === serverName && t.mcpToolName === mcpToolName);
 				if (!source?.execute) {
 					return {
@@ -1028,8 +1030,15 @@ export function createMCPProxyTools(mcpManager: MCPManagerApi): CustomTool[] {
 						details: { serverName, mcpToolName, isError: true },
 					};
 				}
+				// Provider tool-call IDs are unique only within one agent run. Use a
+				// cross-worker invocation token for both tracking and observation so a
+				// sibling's identical provider ID cannot replace this call's attribution.
+				// The proxy's caller still sees the original provider ID; MCP tools use
+				// this internal value only to find their observer's scope.
+				const invocationId = `${toolCallId}:${crypto.randomUUID()}`;
+				const release = mcpManager.trackToolCall(scope, invocationId);
 				try {
-					return await untilAborted(signal, source.execute(toolCallId, params, onUpdate, ctx, signal));
+					return await untilAborted(signal, source.execute(invocationId, params, onUpdate, ctx, signal));
 				} catch (error) {
 					if (error instanceof ToolAbortError) {
 						throw error;
@@ -1046,6 +1055,8 @@ export function createMCPProxyTools(mcpManager: MCPManagerApi): CustomTool[] {
 						],
 						details: { serverName, mcpToolName, isError: true },
 					};
+				} finally {
+					release();
 				}
 			},
 		};
@@ -1057,18 +1068,32 @@ export type MCPToolFollowerSession = Pick<AgentSession, "refreshMCPTools" | "add
 
 /** Subscription created by {@link followMCPTools}; bind it to the session the proxies went into. */
 export interface MCPToolFollower {
+	/** The child's view of the manager; sessions it spawns start from it. */
+	readonly scope: MCPToolScope;
+	/** Mint the child's proxy tools from its own view of the manager. */
+	proxyTools(): CustomTool[];
 	/** Attach the created session; replays any change seen since subscribing, then follows later ones. */
 	bind(session: MCPToolFollowerSession): void;
 	/** Drop the subscription when the session was never created. */
 	dispose(): void;
 }
 
+/** Which view of the shared manager a child session gets. */
+export interface MCPToolView {
+	/** The child session's id: a revived session reopens the view it had. */
+	scope: MCPToolScope;
+	/** View a newly opened one starts from: the spawning session's (default: the owner's). */
+	seed?: MCPToolScope;
+}
+
 /**
- * Keep a child session's MCP proxy tools in step with the parent's shared
- * manager. A child gets a spawn-time {@link createMCPProxyTools} snapshot and
- * never owns the manager's single-slot tool callback, so without this a
- * `/mcp reload` — or a server added, removed, or reconnected later — only
- * reaches the owning session and every live subagent keeps its stale set.
+ * Give a child session its own view of the parent's shared manager and keep
+ * its MCP proxy tools in step with it. A child gets a spawn-time
+ * {@link MCPToolFollower.proxyTools} snapshot and never owns the manager's
+ * single-slot tool callback, so without this a `/mcp reload` — or a server
+ * added, removed, or reconnected later — only reaches the owning session and
+ * every live subagent keeps its stale set. Tools another session's calls make
+ * a server add stay out of this view (see {@link MCPManagerApi.getTools}).
  *
  * Subscribe BEFORE building the child's proxies: a change landing while the
  * session is still being created is recorded and replayed on {@link
@@ -1080,7 +1105,13 @@ export interface MCPToolFollower {
  * so those tools win, and every rebind must keep dropping them, or the first
  * reload would replace the child's own tool with the MCP capability.
  */
-export function followMCPTools(mcpManager: MCPManagerApi, reservedNames?: ReadonlySet<string>): MCPToolFollower {
+export function followMCPTools(
+	mcpManager: MCPManagerApi,
+	view: MCPToolView,
+	reservedNames?: ReadonlySet<string>,
+): MCPToolFollower {
+	const { scope } = view;
+	mcpManager.openToolScope(scope, view.seed);
 	let session: MCPToolFollowerSession | undefined;
 	let pending = false;
 	let scheduled = false;
@@ -1088,7 +1119,7 @@ export function followMCPTools(mcpManager: MCPManagerApi, reservedNames?: Readon
 		scheduled = false;
 		if (!session || !pending) return;
 		pending = false;
-		const proxies = createMCPProxyTools(mcpManager);
+		const proxies = createMCPProxyTools(mcpManager, scope);
 		const tools = reservedNames?.size ? proxies.filter(tool => !reservedNames.has(tool.name)) : proxies;
 		session.refreshMCPTools(tools).catch(error => {
 			logger.warn("Subagent MCP tool refresh failed", {
@@ -1107,6 +1138,8 @@ export function followMCPTools(mcpManager: MCPManagerApi, reservedNames?: Readon
 			if (session) schedule();
 		}) ?? (() => {});
 	return {
+		scope,
+		proxyTools: () => createMCPProxyTools(mcpManager, scope),
 		bind(next) {
 			session = next;
 			next.addDisposer(unsubscribe);
@@ -2454,6 +2487,11 @@ const PROMPT_DISPATCH_IDLE_TIMEOUT_MS = 5_000;
 
 class PromptDispatchError extends Error {}
 
+/** Failures no retry, reminder or notice turn can recover: they end the run. */
+function endsRun(err: unknown): boolean {
+	return err instanceof PromptDispatchError || err instanceof CostCapError;
+}
+
 /**
  * Drive one assignment through a live session: send the prompt (with `restore`,
  * go on with the turn the previous process left unfinished instead:
@@ -2491,6 +2529,12 @@ async function driveSessionToResult(
 	let error: string | undefined;
 	let aborted = false;
 	let abortReasonText: string | undefined;
+	// Cost-cap refusals are terminal: no retry or reminder can be sent until the cap is raised.
+	const refusalBefore = session.costCapRefusal;
+	const costCapRefusal = (): CostCapRefusal | undefined => {
+		const refusal = session.costCapRefusal;
+		return refusal !== refusalBefore ? refusal : undefined;
+	};
 	const checkAbort = () => {
 		if (abortSignal.aborted) {
 			aborted = monitor.isAbortedRun();
@@ -2539,6 +2583,8 @@ async function driveSessionToResult(
 			} catch (err) {
 				if (!(err instanceof PromptDroppedError)) throw err;
 			}
+			const refusal = costCapRefusal();
+			if (refusal) throw new CostCapError(refusal);
 			if (forceFinalYield) monitor.markFinalYieldForced(false);
 			if (attempt === MAX_PROMPT_DISPATCH_ATTEMPTS) {
 				throw new PromptDispatchError(`${label} dropped before provider dispatch after ${attempt} attempts`);
@@ -2584,7 +2630,7 @@ async function driveSessionToResult(
 			// below; real caller/timeout aborts (monitor signal) and genuine
 			// failures keep the old path.
 			const recoverableStop = monitor.budgetStopRequested() || monitor.yieldTurnStopRequested();
-			if (!recoverableStop || abortSignal.aborted || err instanceof PromptDispatchError) throw err;
+			if (!recoverableStop || abortSignal.aborted || endsRun(err)) throw err;
 		}
 
 		// The forced final turn must answer through `yield`, or with no tools at all.
@@ -2640,7 +2686,7 @@ async function driveSessionToResult(
 					);
 					await awaitAbortable(session.waitForIdle());
 				} catch (err) {
-					if (err instanceof PromptDispatchError) throw err;
+					if (endsRun(err)) throw err;
 					if (abortSignal.aborted || err instanceof ToolAbortError) {
 						// Benign control-flow exit — user cancel (^C) or compaction aborting
 						// pending operations both surface here as ToolAbortError. The outer
@@ -2722,8 +2768,7 @@ async function driveSessionToResult(
 						await dispatchPrompt(notice, { attribution: "agent", synthetic: true }, "async-pending notice");
 						await awaitAbortable(session.waitForIdle());
 					} catch (err) {
-						if (abortSignal.aborted || err instanceof ToolAbortError || err instanceof PromptDispatchError)
-							throw err;
+						if (abortSignal.aborted || err instanceof ToolAbortError || endsRun(err)) throw err;
 						// Other notice-turn failures leave the pending jobs to settle passively.
 						logger.warn("Subagent async-pending notice failed", {
 							error: err instanceof Error ? err.message : String(err),
@@ -2776,6 +2821,14 @@ async function driveSessionToResult(
 			exitCode = 1;
 		}
 
+		// The cap refused a request mid-run (the loop stops before the model call
+		// without throwing): its message is why the run produced no result.
+		const refusal = costCapRefusal();
+		if (!delivered && refusal && !aborted) {
+			exitCode = 1;
+			error ??= refusal.message;
+		}
+
 		// A recorded yield that async-result deliveries superseded and the
 		// model never refreshed is stale: fail the run instead of letting the
 		// parent act on a payload that predates the background job outcomes
@@ -2793,7 +2846,13 @@ async function driveSessionToResult(
 		} else {
 			exitCode = 1;
 			if (!abortSignal.aborted) {
-				error = err instanceof Error ? err.stack || err.message : String(err);
+				// A cost-cap refusal is a reason for the parent, not a crash to diagnose.
+				error =
+					err instanceof CostCapError
+						? err.message
+						: err instanceof Error
+							? err.stack || err.message
+							: String(err);
 			}
 		}
 	} finally {
@@ -4045,16 +4104,18 @@ function buildSubagentSessionOptions(
 	settings: Settings,
 	sessionManager: SessionManager,
 	expectedAgentRef: CreateAgentSessionOptions["expectedAgentRef"],
+	mcpFollower: MCPToolFollower | undefined,
 	launch?: SubagentLaunchInputs,
 ): CreateAgentSessionOptions {
 	const inputs = spec.prompt;
 	// MCP proxies are minted per build, not captured in the spec: a kept-alive
 	// subagent revived after `/mcp reload` must see the manager's current tools.
-	const mcpTools = spec.options.mcpManager ? createMCPProxyTools(spec.options.mcpManager) : [];
+	const mcpTools = mcpFollower?.proxyTools() ?? [];
 	const customTools = spec.options.customTools ?? [];
 	return {
 		...spec.options,
 		mcpTools: mcpTools.length > 0 ? mcpTools : undefined,
+		mcpToolScope: mcpFollower?.scope,
 		customTools: customTools.length > 0 ? customTools : undefined,
 		settings,
 		sessionManager,
@@ -4265,7 +4326,10 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 		}
 		await refreshSubagentIrcRoot(capture.spec.prompt, reopened, capture.sessionFile);
 		const mcpManager = capture.spec.options.mcpManager;
-		const mcpFollower = mcpManager ? followMCPTools(mcpManager, explicitSubagentToolNames(capture.spec)) : undefined;
+		// The revived session reopens its own view, keeping the tools its earlier requests rendered.
+		const mcpFollower = mcpManager
+			? followMCPTools(mcpManager, { scope: reopened.getSessionId() }, explicitSubagentToolNames(capture.spec))
+			: undefined;
 		let revived: AgentSession;
 		// Account pools are owner policy: take the live exact-name entry, as
 		// dispatch and persisted revival do, never the spawn-time copy.
@@ -4287,6 +4351,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 					restoreSubagentSettings(capture.settings),
 					reopened,
 					expectedAgentRef,
+					mcpFollower,
 				);
 				({ session: revived } = await createAgentSession({
 					...options,
@@ -5003,13 +5068,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			// Subscribe before the builder mints proxies so a manager change during
 			// session startup is replayed on bind instead of lost.
 			const mcpFollower = mcpManager
-				? followMCPTools(mcpManager, explicitSubagentToolNames(sessionSpec))
+				? followMCPTools(
+						mcpManager,
+						{ scope: sessionManager.getSessionId(), seed: options.mcpToolScope },
+						explicitSubagentToolNames(sessionSpec),
+					)
 				: undefined;
 			let session: AgentSession;
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
 			try {
 				sessionPromise = createAgentSession(
-					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, {
+					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
 						workPoolYieldItems: options.workPoolYieldItems ?? [],
 						// A revived session restores the tier history it persisted (including
 						// tiers a provider rejected or an extension changed since spawn); only
