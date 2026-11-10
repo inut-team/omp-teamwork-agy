@@ -390,7 +390,7 @@ export function supportsAntigravityLongDecodeModel(
 	) {
 		return false;
 	}
-	return rawId.includes("gemini-4") || rawId.includes("argon");
+	return rawId.includes("gemini-4") || rawId.includes("argon") || rawId.includes("carbon");
 }
 export function isContinuationBudgetExhaustedError(errorOrMessage: unknown): boolean {
 	const raw =

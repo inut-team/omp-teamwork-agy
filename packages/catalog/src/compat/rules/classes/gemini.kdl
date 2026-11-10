@@ -85,7 +85,7 @@ class "gemini" {
 		// Exact ids: a revision-wide rule would tie with the Pro low/high ladder.
 		// Gemini API discovery has no bundled Argon reference and infers
 		// `reasoning: false` from the id; repair it so the ladder is selectable.
-		models "gemini-4-argon" "gemini-4-argon-cyber-permissive" {
+		models "gemini-4-argon" "gemini-4-argon-cyber-permissive" "gemini-4-carbon" {
 			thinking-upgrade-neutral #true
 			thinking-efforts "low" "medium" "high"
 		}
@@ -100,7 +100,7 @@ class "gemini" {
 	// https://ai.google.dev/gemini-api/docs/pricing
 	// https://cloud.google.com/vertex-ai/generative-ai/pricing
 	on "google" "google-vertex" "google-antigravity" {
-		models "gemini-4-argon" {
+		models "gemini-4-argon" "gemini-4-carbon" {
 			cost-patch {
 				input 2
 				output 10

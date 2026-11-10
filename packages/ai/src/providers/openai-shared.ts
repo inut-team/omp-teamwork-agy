@@ -1363,7 +1363,7 @@ export function resolveOpenAICompletionsOutputClamp(
 		model.maxTokens > OPENAI_MAX_OUTPUT_TOKENS &&
 		(model.provider === "apphub" ||
 			/^ag\/gemini-/i.test(model.id) ||
-			/gemini-4-argon|gemini-3\.8-flash/i.test(model.id))
+			/gemini-4-(?:argon|carbon)|gemini-3\.8-flash/i.test(model.id))
 	) {
 		return model.maxTokens;
 	}
@@ -1391,7 +1391,7 @@ export function resolveOpenAIResponsesOutputClamp(
 		model.maxTokens > OPENAI_MAX_OUTPUT_TOKENS &&
 		(model.provider === "apphub" ||
 			(typeof model.id === "string" &&
-				(/^ag\/gemini-/i.test(model.id) || /gemini-4-argon|gemini-3\.8-flash/i.test(model.id))))
+				(/^ag\/gemini-/i.test(model.id) || /gemini-4-(?:argon|carbon)|gemini-3\.8-flash/i.test(model.id))))
 	) {
 		return model.maxTokens;
 	}

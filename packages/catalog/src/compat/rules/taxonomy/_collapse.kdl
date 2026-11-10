@@ -57,6 +57,15 @@ collapse {
 		efforts "low" "medium" "high"
 		requires-effort #true
 	}
+	variant-family "google-antigravity" "gemini-4-carbon" name="Gemini 4 Carbon" {
+		members "gemini-4-carbon-low" "gemini-4-carbon-medium" "gemini-4-carbon-high"
+		route "low" "gemini-4-carbon-low"
+		route "medium" "gemini-4-carbon-medium"
+		route "high" "gemini-4-carbon-high"
+		mode "google-level"
+		efforts "low" "medium" "high"
+		requires-effort #true
+	}
 	variant-family "google-antigravity" "gemini-3.5-flash" name="Gemini 3.5 Flash" {
 		members "gemini-3.5-flash-extra-low" "gemini-3.5-flash-low" "gemini-3-flash-agent"
 		route "off" "gemini-3.5-flash-extra-low"
@@ -169,6 +178,17 @@ collapse {
 		route "low" "gemini-4-argon-low"
 		route "medium" "gemini-4-argon-medium"
 		route "high" "gemini-4-argon-high"
+		mode "google-level"
+		efforts "minimal" "low" "medium" "high"
+		requires-effort #true
+	}
+	variant-family "google-gemini-cli" "gemini-4-carbon" name="Gemini 4 Carbon" {
+		members "gemini-4-carbon-low" "gemini-4-carbon-medium" "gemini-4-carbon-high"
+		default-member "gemini-4-carbon-medium"
+		route "minimal" "gemini-4-carbon-low"
+		route "low" "gemini-4-carbon-low"
+		route "medium" "gemini-4-carbon-medium"
+		route "high" "gemini-4-carbon-high"
 		mode "google-level"
 		efforts "minimal" "low" "medium" "high"
 		requires-effort #true
