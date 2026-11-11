@@ -191,9 +191,7 @@ export function createSettingsAwareStreamFn(
 				? compatRecord.streamFirstEventTimeoutMs
 				: undefined;
 		const existingIdleTimeoutMs =
-			compatRecord &&
-			"streamIdleTimeoutMs" in compatRecord &&
-			typeof compatRecord.streamIdleTimeoutMs === "number"
+			compatRecord && "streamIdleTimeoutMs" in compatRecord && typeof compatRecord.streamIdleTimeoutMs === "number"
 				? compatRecord.streamIdleTimeoutMs
 				: undefined;
 		const needsLongPrefillCompat =
@@ -216,8 +214,7 @@ export function createSettingsAwareStreamFn(
 										...compatRecord,
 										streamFirstEventTimeoutMs:
 											existingFirstEventTimeoutMs ?? ANTIGRAVITY_LONG_PREFILL_FIRST_EVENT_TIMEOUT_MS,
-										streamIdleTimeoutMs:
-											existingIdleTimeoutMs ?? ANTIGRAVITY_LONG_PREFILL_IDLE_TIMEOUT_MS,
+										streamIdleTimeoutMs: existingIdleTimeoutMs ?? ANTIGRAVITY_LONG_PREFILL_IDLE_TIMEOUT_MS,
 									} as Model["compat"],
 								}
 							: {}),
