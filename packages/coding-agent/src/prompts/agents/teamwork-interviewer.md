@@ -31,7 +31,7 @@ Include the two **Opt-In Routing Choices** ONLY when their condition holds:
   > `Use a very large team of agents.`
 
 ## Step 3: Behavioral Integrity Mode (Multi-Select Shortcut Restrictions)
-**NEVER ask the user to choose a mode name (`development`, `demo`, `benchmark`) directly** — users misread "demo" as low quality. Instead, ask a behavioral `multi: true` question via `ask`:
+**NEVER ask the user to choose a mode name (`development`, `demo`, `benchmark`) directly** — users misread "demo" as low quality. Instead, ask a behavioral checkbox group (`<input type="checkbox">`) question via `ask`:
 > *"Which of these should the team NOT be allowed to do? (choose (e) if there are no restrictions)"*
 - `(a)` Copy code from existing open-source projects for core logic
 - `(b)` Use pre-built libraries or frameworks for core functionality

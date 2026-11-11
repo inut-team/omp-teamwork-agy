@@ -78,6 +78,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+
 # Check if bun is available
 has_bun() {
     command -v bun >/dev/null 2>&1
@@ -275,6 +276,15 @@ install_binary() {
     echo ""
     echo "✓ Successfully installed omp (${LATEST}) to ${INSTALL_DIR}/omp"
 
+    # An omp earlier on PATH (a previous `bun install -g`, Homebrew, ...) keeps
+    # winning over this install until it is removed or INSTALL_DIR moves ahead.
+    ACTIVE_OMP="$(command -v omp 2>/dev/null || true)"
+    if [ -n "$ACTIVE_OMP" ] && ! [ "$ACTIVE_OMP" -ef "${INSTALL_DIR}/omp" ]; then
+        echo "'omp' still resolves to ${ACTIVE_OMP}; remove that install or put ${INSTALL_DIR} ahead of it on PATH."
+        return
+    fi
+
+    # Check if in PATH
     case ":$PATH:" in
         *":$INSTALL_DIR:"*)
             echo "Run 'omp' to get started!"

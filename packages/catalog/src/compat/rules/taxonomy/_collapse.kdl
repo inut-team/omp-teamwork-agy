@@ -57,6 +57,8 @@ collapse {
 		efforts "low" "medium" "high"
 		requires-effort #true
 	}
+	// Gemini 4 Carbon ships the same `-low`/`-medium`/`-high` SKU split; Gemini 4
+	// models reject `minimal`.
 	variant-family "google-antigravity" "gemini-4-carbon" name="Gemini 4 Carbon" {
 		members "gemini-4-carbon-low" "gemini-4-carbon-medium" "gemini-4-carbon-high"
 		route "low" "gemini-4-carbon-low"
