@@ -39,6 +39,9 @@ import teamworkAwaiterMd from "../prompts/agents/teamwork-awaiter.md" with { typ
 import teamworkImageGeneratorMd from "../prompts/agents/teamwork-image-generator.md" with { type: "text" };
 import teamworkBrowserMd from "../prompts/agents/teamwork-browser.md" with { type: "text" };
 import teamworkUiDesignerMd from "../prompts/agents/teamwork-ui-designer.md" with { type: "text" };
+import swarmWorkerMd from "../prompts/agents/swarm-worker.md" with { type: "text" };
+import swarmMonitorMd from "../prompts/agents/swarm-monitor.md" with { type: "text" };
+import swarmNarratorMd from "../prompts/agents/swarm-narrator.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -124,6 +127,9 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "teamwork-image-generator.md", template: teamworkImageGeneratorMd },
 	{ fileName: "teamwork-browser.md", template: teamworkBrowserMd },
 	{ fileName: "teamwork-ui-designer.md", template: teamworkUiDesignerMd },
+	{ fileName: "swarm-worker.md", template: swarmWorkerMd },
+	{ fileName: "swarm-monitor.md", template: swarmMonitorMd },
+	{ fileName: "swarm-narrator.md", template: swarmNarratorMd },
 ];
 
 // Computed lazily on first loadBundledAgents() call to avoid eager prompt.render at module load.

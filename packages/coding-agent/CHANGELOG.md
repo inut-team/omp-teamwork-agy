@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Antigravity v1.5.5 Native Swarm (`/swarm`, `/swarm board`, `/swarm status`, `/swarm overview`) with the `swarm`, `post_message`, `read_board`, and `swarm_wait` board tools, `@mention`/`@#channel`/`@all` wakeup doorbells, scoped channels, and bundled `swarm-worker`, `swarm-monitor`, and `swarm-narrator` agents
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed

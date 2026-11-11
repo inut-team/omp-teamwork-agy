@@ -79,6 +79,7 @@ import { WriteTool } from "./write";
 import { WaitTool } from "./wait";
 import { isMountableUnderXdev, resolveXdevTool, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
+import { PostMessageTool, ReadBoardTool, SwarmTool, SwarmWaitTool } from "../swarm";
 
 import {
 	cfgAskEnabled,
@@ -166,6 +167,7 @@ export type { VibeToolDetails } from "@oh-my-pi/pi-tui/tools/vibe";
 export * from "./write";
 export * from "./xdev";
 export * from "./yield";
+export * from "../swarm";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any, any, any>;
@@ -618,6 +620,10 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
+	swarm: s => new SwarmTool(s),
+	post_message: s => new PostMessageTool(s),
+	read_board: s => new ReadBoardTool(s),
+	swarm_wait: s => new SwarmWaitTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {

@@ -484,6 +484,14 @@
 			"types": "./src/tools/*.ts",
 			"import": "./src/tools/*.ts"
 		},
+		"./swarm": {
+			"types": "./src/swarm/index.ts",
+			"import": "./src/swarm/index.ts"
+		},
+		"./swarm/*": {
+			"types": "./src/swarm/*.ts",
+			"import": "./src/swarm/*.ts"
+		},
 		"./utils/*": {
 			"types": "./src/utils/*.ts",
 			"import": "./src/utils/*.ts"

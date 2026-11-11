@@ -2,6 +2,8 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import grillMePrompt from "../prompts/slash-commands/grill-me.md" with { type: "text" };
 import browserAgentPrompt from "../prompts/slash-commands/browser-agent.md" with { type: "text" };
 import uiDesignPrompt from "../prompts/slash-commands/ui-design.md" with { type: "text" };
+import swarmCoordinatorPrompt from "../prompts/slash-commands/swarm.md" with { type: "text" };
+import { resolveSwarmDirFromContext, SWARM_TOOL_NAMES, SwarmRuntime } from "../swarm";
 import type { SlashCommandSpec } from "./types";
 import { formatTeamworkStatus, inspectTeamworkStatus } from "../task/teamwork-status";
 import {
@@ -26,6 +28,30 @@ export function buildUiDesignPrompt(args?: string): string {
 export function buildBrowserAgentPrompt(args?: string): string {
 	const trimmed = args?.trim();
 	return prompt.render(browserAgentPrompt, { arguments: trimmed || undefined }).trim();
+}
+
+export function buildSwarmCoordinatorPrompt(args?: string): string {
+	const trimmed = args?.trim();
+	return prompt.render(swarmCoordinatorPrompt, { arguments: trimmed || undefined }).trim();
+}
+
+function parseSwarmBoardSubcommand(rawArgs?: string): {
+	mode: "board" | "status" | "overview";
+	channel?: string;
+} | null {
+	const trimmed = rawArgs?.trim() ?? "";
+	if (!trimmed) return null;
+	const boardMatch = /^board(?:\s+(?:--channel(?:=|\s+)|#?)([a-z0-9*-]+))?\s*$/i.exec(trimmed);
+	if (boardMatch) {
+		return { mode: "board", channel: boardMatch[1] };
+	}
+	if (/^status\s*$/i.test(trimmed)) {
+		return { mode: "status" };
+	}
+	if (/^overview\s*$/i.test(trimmed)) {
+		return { mode: "overview" };
+	}
+	return null;
 }
 
 export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -304,6 +330,77 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
 			return { prompt: buildBrowserAgentPrompt(command.args) };
+		},
+	},
+	{
+		name: "swarm",
+		aliases: ["native-swarm"],
+		icon: "agents",
+		description:
+			"Run an Antigravity v1.5.5 Native Swarm with shared message board, channels, narrator & stall monitor",
+		inlineHint: "<task description | board [--channel <name>] | status | overview>",
+		allowArgs: true,
+		subcommands: [
+			{ name: "board", description: "Display the live Swarm message board, members, and narrator overview" },
+			{ name: "status", description: "Show live Swarm member states, models, channels, and unread counts" },
+			{ name: "overview", description: "Show the Narrator outcome-grouped Overview (view.json)" },
+		],
+		handle: async (command, runtime) => {
+			const sub = parseSwarmBoardSubcommand(command.args);
+			if (sub) {
+				const cwd = runtime?.cwd ?? process.cwd();
+				const swarmDir = resolveSwarmDirFromContext({ cwd });
+				const swarmRuntime = SwarmRuntime.forDir(swarmDir);
+				const formatted =
+					sub.mode === "status"
+						? await swarmRuntime.formatStatusMarkdown()
+						: await swarmRuntime.formatLiveBoardView({
+								channel: sub.channel,
+								overviewOnly: sub.mode === "overview",
+							});
+				if (runtime && typeof runtime.output === "function") {
+					await runtime.output(formatted);
+				}
+				return { prompt: formatted };
+			}
+			return { prompt: buildSwarmCoordinatorPrompt(command.args) };
+		},
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const sub = parseSwarmBoardSubcommand(command.args);
+			if (sub) {
+				const sessionManager = runtime.ctx.sessionManager;
+				const swarmDir = resolveSwarmDirFromContext({
+					cwd: sessionManager?.getCwd?.() ?? process.cwd(),
+					artifactsDir: sessionManager?.getArtifactsDir?.() ?? null,
+					sessionFile: sessionManager?.getSessionFile?.() ?? null,
+					sessionId: sessionManager?.getSessionId?.() ?? null,
+				});
+				const swarmRuntime = SwarmRuntime.forDir(swarmDir);
+				const formatted =
+					sub.mode === "status"
+						? await swarmRuntime.formatStatusMarkdown()
+						: await swarmRuntime.formatLiveBoardView({
+								channel: sub.channel,
+								overviewOnly: sub.mode === "overview",
+							});
+				if (runtime.ctx && typeof runtime.ctx.showStatus === "function") {
+					runtime.ctx.showStatus(formatted);
+				}
+				return { consumed: true };
+			}
+			// Promote the 4 native swarm tools to active top-level tools on the coordinator session
+			const session = runtime.ctx.session;
+			if (
+				session &&
+				typeof session.getActiveToolNames === "function" &&
+				typeof session.setActiveToolsByName === "function"
+			) {
+				const existing = session.getActiveToolNames();
+				const merged = [...new Set([...existing, ...SWARM_TOOL_NAMES])];
+				await session.setActiveToolsByName(merged);
+			}
+			return { prompt: buildSwarmCoordinatorPrompt(command.args) };
 		},
 	},
 ];
