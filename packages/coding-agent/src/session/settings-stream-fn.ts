@@ -44,6 +44,12 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "./settings";
 
+// Gemini 4 Argon/Carbon cold 300K-400K CCPA prefills + 9Router multi-account failover
+// (300s attempt 1 + 300s failover attempt 2 + 30s early SSE flush) can legitimately run
+// up to ~630s before first output event, and silent THINK:high blocks up to 360s.
+const ANTIGRAVITY_LONG_PREFILL_FIRST_EVENT_TIMEOUT_MS = 660_000;
+const ANTIGRAVITY_LONG_PREFILL_IDLE_TIMEOUT_MS = 420_000;
+
 /** Apply each API's setting once; standard Responses preferences can only narrow it. */
 export function resolveWebsocketPreference(
 	settings: Settings,
@@ -173,17 +179,48 @@ export function createSettingsAwareStreamFn(
 			tokenizer = new Tokenizer(model, { nativeHistoryReplay });
 			tokenizers.set(tokenizerKey, tokenizer);
 		}
-		const longDecodeCap = supportsAntigravityLongDecodeModel(model)
+		const isAntigravityLongPrefillModel = supportsAntigravityLongDecodeModel(model);
+		const longDecodeCap = isAntigravityLongPrefillModel
 			? resolveAntigravityLongDecodeMaxTokens(effectiveLongDecode)
 			: undefined;
-		const effectiveModel =
+		const compatRecord = model.compat && typeof model.compat === "object" ? model.compat : undefined;
+		const existingFirstEventTimeoutMs =
+			compatRecord &&
+			"streamFirstEventTimeoutMs" in compatRecord &&
+			typeof compatRecord.streamFirstEventTimeoutMs === "number"
+				? compatRecord.streamFirstEventTimeoutMs
+				: undefined;
+		const existingIdleTimeoutMs =
+			compatRecord &&
+			"streamIdleTimeoutMs" in compatRecord &&
+			typeof compatRecord.streamIdleTimeoutMs === "number"
+				? compatRecord.streamIdleTimeoutMs
+				: undefined;
+		const needsLongPrefillCompat =
+			isAntigravityLongPrefillModel &&
+			(existingFirstEventTimeoutMs === undefined || existingIdleTimeoutMs === undefined);
+		const effectiveMaxTokens =
 			longDecodeCap !== undefined && (model.maxTokens ?? 0) < longDecodeCap
+				? model.contextWindow && model.contextWindow > 0
+					? Math.min(longDecodeCap, model.contextWindow)
+					: longDecodeCap
+				: model.maxTokens;
+		const effectiveModel: Model =
+			effectiveMaxTokens !== model.maxTokens || needsLongPrefillCompat
 				? {
 						...model,
-						maxTokens:
-							model.contextWindow && model.contextWindow > 0
-								? Math.min(longDecodeCap, model.contextWindow)
-								: longDecodeCap,
+						maxTokens: effectiveMaxTokens,
+						...(needsLongPrefillCompat
+							? {
+									compat: {
+										...compatRecord,
+										streamFirstEventTimeoutMs:
+											existingFirstEventTimeoutMs ?? ANTIGRAVITY_LONG_PREFILL_FIRST_EVENT_TIMEOUT_MS,
+										streamIdleTimeoutMs:
+											existingIdleTimeoutMs ?? ANTIGRAVITY_LONG_PREFILL_IDLE_TIMEOUT_MS,
+									} as Model["compat"],
+								}
+							: {}),
 					}
 				: model;
 		const maxTokens = fitOutputTokensToContextWindow(

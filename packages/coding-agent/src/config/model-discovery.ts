@@ -7,6 +7,7 @@
  */
 import { type ApiKey, withAuth } from "@oh-my-pi/pi-ai/auth-retry";
 import { getAppleFoundationModelsAvailability } from "@oh-my-pi/pi-ai/providers/apple-foundation-models";
+import { supportsAntigravityLongDecodeModel } from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
 import type { Api, FetchImpl, Model, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
 import { buildDiscoveredModel, buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
@@ -1401,6 +1402,16 @@ export async function discoverOpenAIModelsList(
 				...(referenceCompat?.reasoningEffortMap ? { reasoningEffortMap: referenceCompat.reasoningEffortMap } : {}),
 				...(referenceCompat?.omitReasoningEffort !== undefined
 					? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
+					: {}),
+				...(supportsAntigravityLongDecodeModel({ id: primaryModelId ?? id })
+					? {
+							streamFirstEventTimeoutMs:
+								referenceCompat?.streamFirstEventTimeoutMs ??
+								policyCompat?.streamFirstEventTimeoutMs ??
+								660_000,
+							streamIdleTimeoutMs:
+								referenceCompat?.streamIdleTimeoutMs ?? policyCompat?.streamIdleTimeoutMs ?? 420_000,
+						}
 					: {}),
 			},
 		} as ModelSpec<Api>;

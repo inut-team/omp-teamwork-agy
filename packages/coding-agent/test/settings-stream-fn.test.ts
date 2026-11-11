@@ -29,10 +29,10 @@ function persistedStore(value: boolean | undefined): Settings {
 	return settings;
 }
 
-function captureBase(): { fn: StreamFn; calls: Array<{ options?: SimpleStreamOptions }> } {
-	const calls: Array<{ options?: SimpleStreamOptions }> = [];
-	const fn: StreamFn = (_model, _context, options) => {
-		calls.push({ options });
+function captureBase(): { fn: StreamFn; calls: Array<{ model: Model; options?: SimpleStreamOptions }> } {
+	const calls: Array<{ model: Model; options?: SimpleStreamOptions }> = [];
+	const fn: StreamFn = (model, _context, options) => {
+		calls.push({ model, options });
 		return new AssistantMessageEventStream();
 	};
 	return { fn, calls };
@@ -191,6 +191,37 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(calls[0]?.options?.streamIdleTimeoutMs).toBe(300_000);
 		expect(calls[1]?.options?.streamFirstEventTimeoutMs).toBe(15_000);
 		expect(calls[1]?.options?.streamIdleTimeoutMs).toBe(10_000);
+	});
+
+	it("widens default model.compat stream timeouts for Gemini 4 Argon/Carbon while preserving explicit compat", () => {
+		const { fn: base, calls } = captureBase();
+		const wrapped = createSettingsAwareStreamFn(Settings.isolated({}), base);
+		const carbonModel = {
+			...stubResponsesModel,
+			id: "ag/gemini-4-carbon-400k",
+			provider: "apphub",
+			contextWindow: 400_000,
+			maxTokens: 65_536,
+			compat: { supportsStore: false },
+		} as unknown as Model;
+
+		wrapped(carbonModel, stubContext, undefined);
+		expect(calls[0]?.model.compat).toMatchObject({
+			supportsStore: false,
+			streamFirstEventTimeoutMs: 660_000,
+			streamIdleTimeoutMs: 420_000,
+		});
+
+		const explicitCarbonModel = {
+			...carbonModel,
+			compat: { supportsStore: false, streamFirstEventTimeoutMs: 120_000, streamIdleTimeoutMs: 90_000 },
+		} as unknown as Model;
+		wrapped(explicitCarbonModel, stubContext, undefined);
+		expect(calls[1]?.model.compat).toMatchObject({
+			supportsStore: false,
+			streamFirstEventTimeoutMs: 120_000,
+			streamIdleTimeoutMs: 90_000,
+		});
 	});
 
 	it("forwards retry.maxDelayMs while preserving caller overrides", () => {
