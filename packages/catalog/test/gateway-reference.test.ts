@@ -40,6 +40,8 @@ describe("Portkey gateway model references", () => {
 		expect(resolveModelReference("ag/gemini-3.8-flash-high-200k", index)?.id).toBe("gemini-3.8-flash");
 		expect(resolveModelReference("ag/claude-sonnet-5-5-high-400k", index)?.id).toBe("claude-sonnet-5-5");
 		expect(resolveModelReference("ag/claude-opus-5-5-high-1m", index)?.id).toBe("claude-opus-5-5");
+		expect(resolveModelReference("ag/gemini-4-carbon-medium-400", index)?.id).toBe("gemini-4-carbon");
+		expect(resolveModelReference("ag/gemini-4-argon-high-200", index)?.id).toBe("gemini-4-argon");
 	});
 	test("cross-provider references do not inherit wire routing thinking", () => {
 		const index = getBundledModelReferenceIndex();
