@@ -1,6 +1,6 @@
 {
 	"name": "@oh-my-pi/pi-natives-linux-x64",
-	"version": "18.18.8",
+	"version": "18.20.0",
 	"author": "Stencil Labs, Inc.",
 	"os": [
 		"linux"

@@ -183,7 +183,7 @@ export const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<Record<string, Antigravit
 	"gemini-4-hydrogen-medium": { modelEnum: "MODEL_PLACEHOLDER_M527", maxOutputTokens: 262144 },
 	"gemini-4-hydrogen-high": { modelEnum: "MODEL_PLACEHOLDER_M528", maxOutputTokens: 262144 },
 	"gemini-4-hydrogen-xhigh": { modelEnum: "MODEL_PLACEHOLDER_M529", maxOutputTokens: 262144 },
-	"orchestrator": { modelEnum: "MODEL_PLACEHOLDER_M667", maxOutputTokens: 262144 },
+	orchestrator: { modelEnum: "MODEL_PLACEHOLDER_M667", maxOutputTokens: 262144 },
 	// Claude on `daily-cloudcode-pa` rejects `maxOutputTokens > 64000` with a
 	// 400 (`Request contains an invalid argument`). The model_enum label is
 	// untracked for these ids; the backend does not require it.

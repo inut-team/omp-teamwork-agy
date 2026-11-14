@@ -14,7 +14,7 @@ import {
 	getAntigravityModelWireProfile,
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
-import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, fetchWithRetry, readSseJson, type SseEventObserver } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { oauthAccountKey } from "../auth/types";
 import type {
@@ -28,7 +28,6 @@ import type {
 	StreamFunction,
 	StreamOptions,
 	TextContent,
-	ThinkingContent,
 	ToolCall,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
@@ -46,7 +45,10 @@ import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./googl
 import {
 	convertMessages,
 	convertTools,
+	CONTINUATION_MAX_ATTEMPTS,
 	EMPTY_STREAM_BASE_DELAY_MS,
+	followGoogleContinuations,
+	GoogleTextBlocks,
 	type GoogleThinkingLevel,
 	hasMeaningfulGoogleContent,
 	isThinkingPart,
@@ -55,10 +57,8 @@ import {
 	mapStopReasonString,
 	mapToolChoice,
 	nextToolCallId,
-	pushBlockEndEvent,
 	pushToolCallEvents,
 	retainThoughtSignature,
-	startTextOrThinkingBlock,
 } from "./google-shared";
 
 /**
@@ -336,9 +336,6 @@ const RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 const GOOGLE_GEMINI_REFRESH_SKEW_MS = 60_000;
 const ANTIGRAVITY_REFRESH_SKEW_MS = 60_000;
-const MAX_CONTINUATION_LEGS = 32;
-const MAX_MID_STREAM_RETRIES = 3;
-const MID_STREAM_RETRY_BASE_DELAY_MS = 1000;
 const ANTIGRAVITY_LONG_DECODE_CAPS: Readonly<Record<Exclude<AntigravityLongDecodeMode, "off">, number>> = {
 	auto: 262_144,
 	"128k": 131_072,
@@ -390,7 +387,9 @@ export function supportsAntigravityLongDecodeModel(
 	) {
 		return false;
 	}
-	return rawId.includes("gemini-4") || rawId.includes("argon") || rawId.includes("carbon");
+	return (
+		rawId.includes("gemini-4") || rawId.includes("argon") || rawId.includes("carbon") || rawId.includes("hydrogen")
+	);
 }
 export function isContinuationBudgetExhaustedError(errorOrMessage: unknown): boolean {
 	const raw =
@@ -405,34 +404,6 @@ export function isContinuationBudgetExhaustedError(errorOrMessage: unknown): boo
 		lower.includes("the input token count exceeds the maximum number") ||
 		lower.includes("more than the max tokens limit allowed")
 	);
-}
-
-export function cloneCloudCodeAssistRequestWithContinuationToken(
-	base: CloudCodeAssistRequest,
-	continuationToken: string,
-	legIndex = 1,
-): CloudCodeAssistRequest {
-	const nextRequest: CloudCodeAssistRequest["request"] = {
-		...base.request,
-		...(base.request.generationConfig ? { generationConfig: { ...base.request.generationConfig } } : {}),
-		continuationToken,
-	};
-	const baseRequestId = base.requestId;
-	let nextRequestId: string | undefined;
-	if (baseRequestId) {
-		const parts = baseRequestId.split("/");
-		if (parts.length === 5 && parts[0] === "agent") {
-			parts[2] = String(Date.now());
-			nextRequestId = parts.join("/");
-		} else {
-			nextRequestId = `${baseRequestId}-leg-${legIndex}`;
-		}
-	}
-	return {
-		...base,
-		...(nextRequestId !== undefined ? { requestId: nextRequestId } : {}),
-		request: nextRequest,
-	};
 }
 
 const optionalCredentialString = type("unknown").pipe(raw => {
@@ -527,7 +498,6 @@ interface CloudCodeAssistRequest {
 	model: string;
 	request: {
 		contents: Content[];
-		continuationToken?: string;
 		sessionId?: string;
 		systemInstruction?: { role?: string; parts: { text: string }[] };
 		generationConfig?: {
@@ -546,6 +516,8 @@ interface CloudCodeAssistRequest {
 			};
 		};
 		labels?: Record<string, string>;
+		/** Resumes a generation Google split into segments (`followGoogleContinuations`). */
+		continuationToken?: string;
 	};
 	requestType?: string;
 	userAgent?: string;
@@ -777,7 +749,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 			const streamResponse = async (
 				activeResponse: Response,
-				continuationEndpointUrl?: string,
+				streamUrl: string,
 			): Promise<{ meaningful: boolean; strippedPlanningLeak: boolean }> => {
 				if (!activeResponse.body) {
 					throw new AIError.ProviderResponseError("No response body", {
@@ -790,72 +762,25 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				// response id into the next request's last_execution_id.
 				lastResponseId = undefined;
 
-				let currentBlock: TextContent | ThinkingContent | null = null;
+				const textBlocks = new GoogleTextBlocks(output, stream, "verbatim", ensureStarted);
 				const blocks = output.content;
 				const blockIndex = () => blocks.length - 1;
 				const visibleTextHealing = new StreamMarkupHealing({ pattern: "thinking" });
 
+				// Reply text passes two holding stages before it reaches `textBlocks`: the
+				// planning-leak buffer (flash models) and markup healing. Anything that ends
+				// a run of reply text must settle both first, or the next block lands ahead
+				// of text that streamed before it.
 				let isBuffering = false;
 				let textBuffer = "";
 				let bufferedTextSignature: string | undefined;
 				let strippedPlanningLeak = false;
 
-				const endCurrentBlock = (): void => {
-					if (!currentBlock) return;
-					pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
-					currentBlock = null;
-				};
-
-				const startTextBlock = (): TextContent => {
-					let block = currentBlock;
-					if (block?.type !== "text") {
-						endCurrentBlock();
-						block = startTextOrThinkingBlock(false, output, stream, ensureStarted);
-						currentBlock = block;
-					}
-					return block;
-				};
-
-				const startThinkingBlock = (): ThinkingContent => {
-					let block = currentBlock;
-					if (block?.type !== "thinking") {
-						endCurrentBlock();
-						block = startTextOrThinkingBlock(true, output, stream, ensureStarted);
-						currentBlock = block;
-					}
-					return block;
-				};
-
-				const emitVisibleText = (delta: string, thoughtSignature?: string): void => {
-					if (!delta) return;
-					const block = startTextBlock();
-					block.text += delta;
-					block.textSignature = retainThoughtSignature(block.textSignature, thoughtSignature);
-					stream.push({
-						type: "text_delta",
-						contentIndex: blockIndex(),
-						delta,
-						partial: output,
-					});
-				};
-
-				const emitVisibleThinking = (delta: string): void => {
-					if (!delta) return;
-					const block = startThinkingBlock();
-					block.thinking += delta;
-					stream.push({
-						type: "thinking_delta",
-						contentIndex: blockIndex(),
-						delta,
-						partial: output,
-					});
-				};
-
 				const emitHealingEvent = (event: StreamMarkupHealingEvent, thoughtSignature?: string): void => {
 					if (event.type === "text") {
-						emitVisibleText(event.text, thoughtSignature);
+						if (event.text) textBlocks.appendText(event.text, thoughtSignature);
 					} else if (event.type === "thinking") {
-						emitVisibleThinking(event.thinking);
+						if (event.thinking) textBlocks.appendThinking(event.thinking);
 					}
 				};
 
@@ -865,390 +790,219 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					}
 				};
 
-				const flushVisibleText = (thoughtSignature?: string): void => {
+				const flushVisibleText = (): void => {
 					for (const event of visibleTextHealing.flushEvents()) {
-						emitHealingEvent(event, thoughtSignature);
+						emitHealingEvent(event);
 					}
 				};
 
-				const retainCurrentBlockThoughtSignature = (thoughtSignature: string): void => {
-					const block = currentBlock;
-					if (!block) return;
-					if (block.type === "thinking") {
-						block.thinkingSignature = retainThoughtSignature(block.thinkingSignature, thoughtSignature);
-					} else {
-						block.textSignature = retainThoughtSignature(block.textSignature, thoughtSignature);
+				// Lands all held reply text; the signature the buffered text carried signs where it landed.
+				const settleVisibleText = (): void => {
+					const signature = bufferedTextSignature;
+					if (isBuffering) {
+						const buffered = consumePlanningBuffer(textBuffer, toolNames, true);
+						isBuffering = false;
+						textBuffer = "";
+						bufferedTextSignature = undefined;
+						if (buffered.kind === "leak") strippedPlanningLeak = true;
+						if (buffered.kind !== "incomplete") feedVisibleText(buffered.visibleText);
 					}
+					flushVisibleText();
+					if (signature) textBlocks.sign(signature, false);
 				};
 
-				const targetEndpointUrl =
-					continuationEndpointUrl ||
-					activeResponse.url ||
-					`${endpoints[0]}/v1internal:streamGenerateContent?alt=sse`;
-				const targetMaxOutputTokens = requestBody.request.generationConfig?.maxOutputTokens ?? 65_536;
+				// An unmarked signature-only part signs the reply text before it, which may still be held.
+				const signVisibleText = (thoughtSignature: string): void => {
+					if (isBuffering) {
+						bufferedTextSignature = retainThoughtSignature(bufferedTextSignature, thoughtSignature);
+						return;
+					}
+					flushVisibleText();
+					textBlocks.sign(thoughtSignature, false);
+				};
+
+				const responseAbortController = new AbortController();
+				const responseSignal = options?.signal
+					? AbortSignal.any([options.signal, responseAbortController.signal])
+					: responseAbortController.signal;
 				const onSseEvent = options?.onSseEvent;
-
-				let currentLegResponse = activeResponse;
-				let legIndex = 0;
-				let midStreamRetries = 0;
-				let latestContinuationToken: string | undefined;
-				let initialInputTokens: number | undefined;
-				let initialCacheReadTokens: number | undefined;
-				let committedOutputTokens = 0;
-				let committedThinkingTokens = 0;
-
-				const isRetriableMidStreamError = (err: unknown): boolean => {
-					if (options?.signal?.aborted || err instanceof AIError.AbortError) return false;
-					if (err instanceof AIError.ProviderResponseError && err.kind === "content-blocked") return false;
-					const status = extractHttpStatusFromError(err);
-					if (status === 401 || status === 403 || status === 429) return false;
-					if (status !== undefined && status >= 400 && status < 500) return false;
-					return true;
-				};
-
-				const dialNextContinuationLeg = async (token: string, nextLegIdx: number): Promise<Response | null> => {
-					while (true) {
-						if (options?.signal?.aborted) {
-							throw new AIError.AbortError("Request was aborted");
-						}
-						const legPayload = cloneCloudCodeAssistRequestWithContinuationToken(requestBody, token, nextLegIdx);
-						const legWatchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
-						let nextResp: Response;
-						try {
-							nextResp = await (options?.fetch ?? fetch)(targetEndpointUrl, {
-								method: "POST",
-								headers: requestHeaders,
-								body: JSON.stringify(legPayload),
-								signal: legWatchdog.signal,
-							});
-						} catch (dialErr) {
-							legWatchdog.clear();
-							if (midStreamRetries < MAX_MID_STREAM_RETRIES && isRetriableMidStreamError(dialErr)) {
-								midStreamRetries += 1;
-								const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
-								await scheduler.wait(delayMs, { signal: options?.signal });
-								continue;
-							}
-							throw dialErr;
-						} finally {
-							legWatchdog.clear();
-						}
-
-						if (!nextResp.ok) {
-							const errText = await nextResp.text();
-							if (isContinuationBudgetExhaustedError(errText)) {
-								return null;
-							}
-							const apiErr = new AIError.GeminiCliApiError(
-								`Cloud Code Assist API error (${nextResp.status}): ${errText}`,
-								nextResp.status,
-								{ headers: nextResp.headers },
-							);
-							if (midStreamRetries < MAX_MID_STREAM_RETRIES && isRetriableMidStreamError(apiErr)) {
-								midStreamRetries += 1;
-								const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
-								await scheduler.wait(delayMs, { signal: options?.signal });
-								continue;
-							}
-							throw apiErr;
-						}
-
-						return nextResp;
-					}
-				};
-
-				while (true) {
-					if (!currentLegResponse.body) {
-						throw new AIError.ProviderResponseError("No response body", {
-							provider: model.provider,
-							kind: "empty-body",
-						});
-					}
-
-					let legOutputTokens = 0;
-					let legThinkingTokens = 0;
-					let legFinishReason: string | undefined;
-					let legHasToolCall = false;
-					let resumedFromMidStreamError = false;
-
-					const responseAbortController = new AbortController();
-					const responseSignal = options?.signal
-						? AbortSignal.any([options.signal, responseAbortController.signal])
-						: responseAbortController.signal;
-					const chunks = iterateWithIdleTimeout(
-						// Attach the observer only when a diagnostic listener exists: any
-						// observer turns on per-line raw capture in `readSseJson`.
-						readSseJson<CloudCodeAssistResponseChunk>(
-							currentLegResponse.body,
-							responseSignal,
-							onSseEvent
-								? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model)
-								: undefined,
-						),
-						{
-							firstItemTimeoutMs: firstEventTimeoutMs,
-							errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-							firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
-							onFirstItemTimeout: () =>
-								responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
-							abortSignal: options?.signal,
-						},
-					);
-
+				// Attach the observer only when a diagnostic listener exists: any
+				// observer turns on per-line raw capture in `readSseJson`.
+				const sseObserver: SseEventObserver | undefined = onSseEvent
+					? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, model)
+					: undefined;
+				const resumeSegment = async (continuationToken: string) => {
+					// Same transport contract as the initial POST (retry schedule, no absolute
+					// fetch timeout that would cut off a segment still decoding), with
+					// `CONTINUATION_MAX_ATTEMPTS` and a pre-response watchdog per attempt,
+					// cleared once headers arrive.
+					let clearWatchdog: (() => void) | undefined;
+					let resumed: Response;
 					try {
-						for await (const chunk of chunks) {
-							if (chunk.error) {
-								const detail =
-									chunk.error.message && chunk.error.status
-										? `${chunk.error.message} (${chunk.error.status})`
-										: chunk.error.message || chunk.error.status || "unknown error";
-								const residue =
-									Array.isArray(chunk.error.details) && chunk.error.details.length > 0
-										? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
-										: "";
-								const message = `Cloud Code Assist stream error: ${detail}${residue}`;
-								throw typeof chunk.error.code === "number" && chunk.error.code >= 400
-									? new AIError.GeminiCliApiError(message, chunk.error.code)
-									: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "runtime" });
+						resumed = await fetchWithRetry(streamUrl, {
+							method: "POST",
+							headers: requestHeaders,
+							body: JSON.stringify({ ...requestBody, request: { ...requestBody.request, continuationToken } }),
+							signal: responseSignal,
+							prepareInit: () => {
+								clearWatchdog?.();
+								const watchdog = armPreResponseTimeout(responseSignal, firstEventTimeoutMs);
+								clearWatchdog = watchdog.clear;
+								return { signal: watchdog.signal };
+							},
+							maxAttempts: CONTINUATION_MAX_ATTEMPTS,
+							defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
+							maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
+							fetch: options?.fetch,
+							timeout: false,
+						});
+						if (!resumed.ok || !resumed.body) {
+							const errorText = await resumed.text();
+							if (!resumed.ok && isContinuationBudgetExhaustedError(errorText)) {
+								async function* budgetExhaustedEnd(): AsyncGenerator<CloudCodeAssistResponseChunk> {
+									yield { response: { candidates: [{ finishReason: "MAX_TOKENS" }] } };
+								}
+								return budgetExhaustedEnd();
 							}
-							const responseData = chunk.response;
-							if (!responseData) continue;
-							if (responseData.responseId) lastResponseId = responseData.responseId;
-							if (!responseData.candidates?.length && responseData.promptFeedback?.blockReason) {
-								const detail = responseData.promptFeedback.blockReasonMessage;
-								throw new AIError.ProviderResponseError(
-									`Request blocked by Google (${responseData.promptFeedback.blockReason})${detail ? `: ${detail}` : ""}`,
-									{ provider: model.provider, kind: "content-blocked" },
-								);
-							}
+							throw new AIError.GeminiCliApiError(
+								`Cloud Code Assist API error (${resumed.status}) resuming a long generation: ${errorText}`,
+								resumed.status,
+								{ headers: resumed.headers },
+							);
+						}
+					} finally {
+						clearWatchdog?.();
+					}
+					return readSseJson<CloudCodeAssistResponseChunk>(resumed.body, responseSignal, sseObserver);
+				};
+				const chunks = iterateWithIdleTimeout(
+					followGoogleContinuations(
+						readSseJson<CloudCodeAssistResponseChunk>(activeResponse.body, responseSignal, sseObserver),
+						chunk => chunk.response,
+						resumeSegment,
+					),
+					{
+						firstItemTimeoutMs: firstEventTimeoutMs,
+						errorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+						firstItemErrorMessage: FIRST_EVENT_TIMEOUT_ERROR,
+						onFirstItemTimeout: () =>
+							responseAbortController.abort(new AIError.StreamTimeoutError(FIRST_EVENT_TIMEOUT_ERROR)),
+						abortSignal: options?.signal,
+					},
+				);
+				for await (const chunk of chunks) {
+					if (chunk.error) {
+						const detail =
+							chunk.error.message && chunk.error.status
+								? `${chunk.error.message} (${chunk.error.status})`
+								: chunk.error.message || chunk.error.status || "unknown error";
+						const residue =
+							Array.isArray(chunk.error.details) && chunk.error.details.length > 0
+								? ` ${JSON.stringify({ error: { status: chunk.error.status, details: chunk.error.details } })}`
+								: "";
+						const message = `Cloud Code Assist stream error: ${detail}${residue}`;
+						throw typeof chunk.error.code === "number" && chunk.error.code >= 400
+							? new AIError.GeminiCliApiError(message, chunk.error.code)
+							: new AIError.ProviderResponseError(message, { provider: model.provider, kind: "runtime" });
+					}
+					const responseData = chunk.response;
+					if (!responseData) continue;
+					if (responseData.responseId) lastResponseId = responseData.responseId;
+					if (!responseData.candidates?.length && responseData.promptFeedback?.blockReason) {
+						const detail = responseData.promptFeedback.blockReasonMessage;
+						throw new AIError.ProviderResponseError(
+							`Request blocked by Google (${responseData.promptFeedback.blockReason})${detail ? `: ${detail}` : ""}`,
+							{ provider: model.provider, kind: "content-blocked" },
+						);
+					}
 
-							const candidate = responseData.candidates?.[0];
-							if (typeof candidate?.continuationToken === "string" && candidate.continuationToken.length > 0) {
-								latestContinuationToken = candidate.continuationToken;
-							}
-							if (candidate?.content?.parts) {
-								for (const part of candidate.content.parts) {
-									if (part.text !== undefined && part.text !== "") {
-										const isThinking = isThinkingPart(part);
-										if (isThinking) {
-											flushVisibleText();
-											const block = startThinkingBlock();
-											block.thinking += part.text;
-											block.thinkingSignature = retainThoughtSignature(
-												block.thinkingSignature,
-												part.thoughtSignature,
-											);
-											stream.push({
-												type: "thinking_delta",
-												contentIndex: blockIndex(),
-												delta: part.text,
-												partial: output,
-											});
-										} else {
-											if (isBuffering) {
-												textBuffer += part.text;
-												bufferedTextSignature = retainThoughtSignature(
-													bufferedTextSignature,
-													part.thoughtSignature,
-												);
-											} else if (isFlashLeakModel && part.text.trimStart().startsWith("{")) {
-												isBuffering = true;
-												textBuffer = part.text;
-												bufferedTextSignature = part.thoughtSignature;
-											} else {
-												feedVisibleText(part.text, part.thoughtSignature);
-											}
+					const candidate = responseData.candidates?.[0];
+					if (candidate?.content?.parts) {
+						for (const part of candidate.content.parts) {
+							const { text, thoughtSignature } = part;
+							// A signature-only part carries no text, only a `thoughtSignature`.
+							const signatureOnly = text === "" && !part.functionCall ? thoughtSignature : undefined;
+							if (isThinkingPart(part)) {
+								if (text || signatureOnly) {
+									settleVisibleText();
+									textBlocks.push(part);
+								}
+							} else if (text) {
+								if (isBuffering) {
+									textBuffer += text;
+									bufferedTextSignature = retainThoughtSignature(bufferedTextSignature, thoughtSignature);
+								} else if (isFlashLeakModel && text.trimStart().startsWith("{")) {
+									isBuffering = true;
+									textBuffer = text;
+									bufferedTextSignature = thoughtSignature;
+								} else {
+									feedVisibleText(text, thoughtSignature);
+								}
 
-											if (isBuffering) {
-												const buffered = consumePlanningBuffer(textBuffer, toolNames);
-												if (buffered.kind !== "incomplete") {
-													if (buffered.kind === "leak") strippedPlanningLeak = true;
-													const visibleSignature = bufferedTextSignature;
-													isBuffering = false;
-													textBuffer = "";
-													bufferedTextSignature = undefined;
-													feedVisibleText(buffered.visibleText, visibleSignature);
-												}
-											}
-										}
-									} else if (part.text === "" && part.thoughtSignature && !part.functionCall) {
-										retainCurrentBlockThoughtSignature(part.thoughtSignature);
-									}
-
-									if (part.functionCall) {
-										legHasToolCall = true;
-										flushVisibleText();
-										endCurrentBlock();
+								if (isBuffering) {
+									const buffered = consumePlanningBuffer(textBuffer, toolNames);
+									if (buffered.kind !== "incomplete") {
+										if (buffered.kind === "leak") strippedPlanningLeak = true;
+										const visibleSignature = bufferedTextSignature;
 										isBuffering = false;
 										textBuffer = "";
-										const providedId = part.functionCall.id;
-										const needsNewId =
-											!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
-										const toolCallId = needsNewId
-											? nextToolCallId(part.functionCall.name || "tool")
-											: providedId;
-
-										const toolCall: ToolCall = {
-											type: "toolCall",
-											id: toolCallId,
-											name: part.functionCall.name || "",
-											arguments: (part.functionCall.args ?? {}) as Record<string, unknown>,
-											...(part.thoughtSignature && { thoughtSignature: part.thoughtSignature }),
-										};
-
-										output.content.push(toolCall);
-										ensureStarted();
-										pushToolCallEvents(toolCall, blockIndex(), output, stream);
+										bufferedTextSignature = undefined;
+										feedVisibleText(buffered.visibleText, visibleSignature);
 									}
 								}
+							} else if (signatureOnly) {
+								signVisibleText(signatureOnly);
 							}
 
-							if (candidate?.finishReason) {
-								legFinishReason = candidate.finishReason;
-								if (candidate.finishReason !== "CONTINUATION") {
-									sawFinishReason = true;
-									const mapped = mapStopReasonString(candidate.finishReason);
-									// Only let a trailing tool call upgrade benign finishes; error finishes
-									// (SAFETY, MALFORMED_FUNCTION_CALL, ...) must surface even with tool calls present.
-									if (
-										(mapped === "stop" || mapped === "length") &&
-										output.content.some(b => b.type === "toolCall")
-									) {
-										output.stopReason = "toolUse";
-									} else {
-										output.stopReason = mapped;
-										if (mapped === "error") {
-											output.errorMessage = `Generation failed with finish reason: ${candidate.finishReason}`;
-										}
-									}
-								}
-							}
+							if (part.functionCall) {
+								// Text still buffered here is the planning leak that precedes the call.
+								flushVisibleText();
+								textBlocks.close();
+								isBuffering = false;
+								textBuffer = "";
+								bufferedTextSignature = undefined;
+								const providedId = part.functionCall.id;
+								const needsNewId =
+									!providedId || output.content.some(b => b.type === "toolCall" && b.id === providedId);
+								const toolCallId = needsNewId ? nextToolCallId(part.functionCall.name || "tool") : providedId;
 
-							if (responseData.usageMetadata) {
-								const legUsage = mapGoogleUsage(responseData.usageMetadata);
-								const legThinking = responseData.usageMetadata.thoughtsTokenCount || 0;
-								if (initialInputTokens === undefined) {
-									initialInputTokens = legUsage.input;
-									initialCacheReadTokens = legUsage.cacheRead;
-								}
-								legOutputTokens = legUsage.output;
-								legThinkingTokens = legThinking;
-								const totalOutput = committedOutputTokens + legOutputTokens;
-								const totalThinking = committedThinkingTokens + legThinkingTokens;
-								const inputTokens = initialInputTokens ?? legUsage.input;
-								const cacheReadTokens = initialCacheReadTokens ?? legUsage.cacheRead;
-								output.usage = {
-									input: inputTokens,
-									output: totalOutput,
-									cacheRead: cacheReadTokens,
-									cacheWrite: 0,
-									totalTokens: inputTokens + cacheReadTokens + totalOutput,
-									...(totalThinking > 0 ? { reasoningTokens: totalThinking } : {}),
-									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+								const toolCall: ToolCall = {
+									type: "toolCall",
+									id: toolCallId,
+									name: part.functionCall.name || "",
+									arguments: (part.functionCall.args ?? {}) as Record<string, unknown>,
+									...(part.thoughtSignature && { thoughtSignature: part.thoughtSignature }),
 								};
-								calculateCost(model, output.usage, output.timestamp);
+
+								output.content.push(toolCall);
+								ensureStarted();
+								pushToolCallEvents(toolCall, blockIndex(), output, stream);
 							}
-						}
-					} catch (legErr) {
-						if (legIndex > 0 && isContinuationBudgetExhaustedError(legErr)) {
-							sawFinishReason = true;
-							output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
-							break;
-						}
-						if (
-							latestContinuationToken &&
-							!legHasToolCall &&
-							midStreamRetries < MAX_MID_STREAM_RETRIES &&
-							isRetriableMidStreamError(legErr)
-						) {
-							midStreamRetries += 1;
-							committedOutputTokens += legOutputTokens;
-							committedThinkingTokens += legThinkingTokens;
-							const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
-							await scheduler.wait(delayMs, { signal: options?.signal });
-							const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
-							if (!nextResp) {
-								sawFinishReason = true;
-								output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
-								break;
-							}
-							legIndex += 1;
-							currentLegResponse = nextResp;
-							resumedFromMidStreamError = true;
-						} else {
-							throw legErr;
 						}
 					}
 
-					if (resumedFromMidStreamError) {
-						continue;
-					}
-
-					const totalGeneratedTokens = committedOutputTokens + legOutputTokens;
-					if (legFinishReason === "CONTINUATION") {
-						const canContinue =
-							Boolean(latestContinuationToken) &&
-							!legHasToolCall &&
-							legIndex < MAX_CONTINUATION_LEGS &&
-							totalGeneratedTokens < targetMaxOutputTokens;
-						if (canContinue && latestContinuationToken) {
-							committedOutputTokens += legOutputTokens;
-							committedThinkingTokens += legThinkingTokens;
-							midStreamRetries = 0;
-							const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
-							if (!nextResp) {
-								sawFinishReason = true;
-								output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
-								break;
-							}
-							legIndex += 1;
-							currentLegResponse = nextResp;
-							continue;
-						}
-						// Continuation budget reached or tool call emitted -> surface as length/toolUse (matching AGY 0x82acc84)
+					if (candidate?.finishReason) {
 						sawFinishReason = true;
-						output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
-						break;
-					}
-
-					if (
-						!sawFinishReason &&
-						latestContinuationToken &&
-						!legHasToolCall &&
-						midStreamRetries < MAX_MID_STREAM_RETRIES
-					) {
-						midStreamRetries += 1;
-						committedOutputTokens += legOutputTokens;
-						committedThinkingTokens += legThinkingTokens;
-						const delayMs = MID_STREAM_RETRY_BASE_DELAY_MS * 2 ** (midStreamRetries - 1);
-						await scheduler.wait(delayMs, { signal: options?.signal });
-						const nextResp = await dialNextContinuationLeg(latestContinuationToken, legIndex + 1);
-						if (!nextResp) {
-							sawFinishReason = true;
-							output.stopReason = output.content.some(b => b.type === "toolCall") ? "toolUse" : "length";
-							break;
+						const mapped = mapStopReasonString(candidate.finishReason);
+						// Only let a trailing tool call upgrade benign finishes; error finishes
+						// (SAFETY, MALFORMED_FUNCTION_CALL, ...) must surface even with tool calls present.
+						if ((mapped === "stop" || mapped === "length") && output.content.some(b => b.type === "toolCall")) {
+							output.stopReason = "toolUse";
+						} else {
+							output.stopReason = mapped;
+							if (mapped === "error") {
+								output.errorMessage = `Generation failed with finish reason: ${candidate.finishReason}`;
+							}
 						}
-						legIndex += 1;
-						currentLegResponse = nextResp;
-						continue;
 					}
 
-					break;
-				}
-				if (isBuffering && textBuffer !== "") {
-					const buffered = consumePlanningBuffer(textBuffer, toolNames, true);
-
-					if (buffered.kind !== "incomplete") {
-						if (buffered.kind === "leak") strippedPlanningLeak = true;
-						feedVisibleText(buffered.visibleText, bufferedTextSignature);
+					if (responseData.usageMetadata) {
+						output.usage = mapGoogleUsage(responseData.usageMetadata);
+						calculateCost(model, output.usage, output.timestamp);
 					}
-					bufferedTextSignature = undefined;
-					isBuffering = false;
-					textBuffer = "";
 				}
-
-				flushVisibleText(bufferedTextSignature);
-				endCurrentBlock();
+				settleVisibleText();
+				textBlocks.close();
 
 				return {
 					meaningful: hasMeaningfulGoogleContent(output),
@@ -1265,6 +1019,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 
 			for (let i = 0; i < endpoints.length; i++) {
 				const endpoint = endpoints[i];
+				const streamUrl = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
 				const isLastEndpoint = i === endpoints.length - 1;
 				try {
 					started = false;
@@ -1276,7 +1031,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					const watchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
 					let response: Response;
 					try {
-						response = await fetchWithRetry(() => `${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
+						response = await fetchWithRetry(() => streamUrl, {
 							method: "POST",
 							headers: requestHeaders,
 							body: requestBodyJson,
@@ -1350,10 +1105,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							}
 						}
 
-						const streamed = await streamResponse(
-							currentResponse,
-							requestUrl || `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
-						);
+						const streamed = await streamResponse(currentResponse, streamUrl);
 						// Eventless silence may fail over to the alternate Antigravity
 						// endpoint. Once thinking has streamed, the endpoint is already
 						// committed downstream; Advisor mode may accept that silence,
