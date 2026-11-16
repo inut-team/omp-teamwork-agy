@@ -25,8 +25,9 @@ import type { GoalModeState } from "../goals/state";
 import type { TokenRateMeter } from "../utils/token-rate";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
-import { currentThreadId } from "../thread/identity";
+import type { SwarmWakeNotice } from "../swarm/hub";
 import type { AgentSession } from "./agent-session";
+import { currentThreadId } from "../thread/identity";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import type {
 	AgentSessionDisposeOptions,
@@ -138,9 +139,24 @@ export interface AgentSessionHandle {
 	emitIrcRelayObservation(record: CustomMessage): void;
 	/** Deliver an IRC message into this recipient session. */
 	deliverIrcMessage(msg: IrcMessage): Promise<"injected" | "woken">;
+	/** Deliver a swarm wakeup notice into this session cleanly without IRC framing. */
+	deliverSwarmWake?(notice: SwarmWakeNotice): Promise<void>;
+	/** Switch model directly while preserving conversation history. */
+	setModel?(
+		model: Model,
+		role?: string,
+		options?: {
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+		},
+	): Promise<{ switched: boolean }>;
+	/** Materialize the transcript on disk (cross-thread safe helper for `fork`). */
+	ensureSessionOnDisk?(): Promise<void>;
+	/** Flush pending transcript writes to disk (cross-thread safe helper for `fork`). */
+	flushSessionTranscript?(): Promise<void>;
 	/** Wait for any in-flight IRC wake-turn relays. */
 	waitForIrcReplies(): Promise<void>;
-	/** Send a prompt (or steer/follow up while streaming, per `options.streamingBehavior`). */
 	prompt(text: string, options?: PromptOptions): Promise<boolean>;
 	/** Queue a steering message for the next step boundary. */
 	steer(text: string, images?: ImageContent[], options?: SteerOptions): Promise<void>;

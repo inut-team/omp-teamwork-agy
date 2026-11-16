@@ -29,6 +29,9 @@ const COORDINATOR_SELECTORS = new Set(["coordinator", "main", "parent"]);
 
 async function flushIfInProcessSession(candidate: unknown): Promise<void> {
 	if (!candidate || typeof candidate !== "object") return;
+	if ("ensureSessionOnDisk" in candidate && typeof candidate.ensureSessionOnDisk === "function") {
+		await candidate.ensureSessionOnDisk();
+	}
 	if ("flushSessionTranscript" in candidate && typeof candidate.flushSessionTranscript === "function") {
 		await candidate.flushSessionTranscript();
 		return;

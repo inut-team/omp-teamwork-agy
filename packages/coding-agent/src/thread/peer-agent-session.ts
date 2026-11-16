@@ -30,9 +30,10 @@ import type {
 import type { CustomMessage } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { AgentDefinition } from "../task/types";
+import type { SwarmWakeNotice } from "../swarm/hub";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
-import type { ThreadId } from "./identity";
 import { emptyMirrorState } from "./remote-agent-session";
+import type { ThreadId } from "./identity";
 import { findRemoteSession, rememberRemoteSession } from "./session-directory";
 import type {
 	PeerStateField,
@@ -205,6 +206,29 @@ export class PeerAgentSession implements AgentSessionHandle {
 		return mainBridge().remote.call("deliverIrcMessage", this, msg);
 	}
 
+	deliverSwarmWake(notice: SwarmWakeNotice): Promise<void> {
+		return mainBridge().remote.call("deliverSwarmWake", this, notice);
+	}
+
+	setModel(
+		model: Model,
+		role?: string,
+		options?: {
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+		},
+	): Promise<{ switched: boolean }> {
+		return mainBridge().remote.call("setModel", this, model, role, options);
+	}
+
+	ensureSessionOnDisk(): Promise<void> {
+		return mainBridge().remote.call("ensureSessionOnDisk", this);
+	}
+
+	flushSessionTranscript(): Promise<void> {
+		return mainBridge().remote.call("flushSessionTranscript", this);
+	}
 	waitForIrcReplies(): Promise<void> {
 		return mainBridge().remote.call("waitForIrcReplies", this);
 	}

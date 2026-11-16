@@ -64,6 +64,7 @@ import { isBundledSeance, prepareSeance, type PreparedSeanceSession } from "./se
 import { ChannelBoard, normalizeChannelTopic } from "../irc/channels";
 import { prepareForkFromSession, type PreparedForkSession } from "./fork-from";
 import { SEANCE_AGENT_NAME } from "./seance-policy";
+import type { SwarmContext } from "../swarm/types";
 import { type AgentDefinition, canSpawnAtDepth } from "./types";
 import type {
 	AgentProgress,
@@ -208,6 +209,10 @@ export interface StructuredSubagentRequest {
 	forkFrom?: string;
 	/** Scoped pub/sub channels (`agent://channel/<topic>`) to auto-subscribe this child to on launch. */
 	channels?: string[];
+	/** Swarm identity when spawning a native swarm member (propagated across worker threads & revivals). */
+	swarmContext?: SwarmContext;
+	/** Source workspace directory to snapshot when creating an isolated `fork` workspace from a live peer. */
+	isolationSourceCwd?: string;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	/** See {@link ExecutorOptions.onToolResult}. */
@@ -940,6 +945,7 @@ function buildExecutorOptions(
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 		parentPromptCacheKey: session.getPromptCacheKey?.(),
 		parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
+		swarmContext: request.swarmContext,
 	};
 }
 
@@ -1125,7 +1131,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let isolationContext: IsolationContext | null = null;
 		if (policy.isIsolated) {
 			try {
-				isolationContext = await prepareIsolationContext(request.session.cwd);
+				isolationContext = await prepareIsolationContext(request.isolationSourceCwd ?? request.session.cwd);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				throw new StructuredSubagentError(

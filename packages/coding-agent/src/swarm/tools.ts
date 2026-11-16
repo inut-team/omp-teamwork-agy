@@ -6,10 +6,10 @@ import readBoardPrompt from "../prompts/tools/read-board.md" with { type: "text"
 import swarmPrompt from "../prompts/tools/swarm.md" with { type: "text" };
 import swarmWaitPrompt from "../prompts/tools/swarm-wait.md" with { type: "text" };
 import type { ToolSession } from "../tools";
+import { SwarmHub } from "./hub";
 import { messageChannelOf } from "./mentions";
 import { formatBoardMessagesMarkdown, promoteSwarmToolsOnSession, SwarmRuntime } from "./runtime";
 import type { SwarmChannelOp, SwarmRole, SwarmToolDetails, SwarmWorkspaceMode } from "./types";
-
 const swarmSchema = type({
 	action: '"status" | "models" | "add" | "model" | "kill" | "title" | "channel"',
 	"name?": "string",
@@ -44,6 +44,7 @@ const readBoardSchema = type({
 const swarmWaitSchema = type({
 	since: "number.integer >= 0",
 	"mentions_only?": "boolean",
+	"timeout_ms?": "number.integer >= 1",
 });
 
 function errorResult(text: string, details: SwarmToolDetails): AgentToolResult<SwarmToolDetails> {
@@ -70,17 +71,18 @@ export class SwarmTool implements AgentTool<typeof swarmSchema, SwarmToolDetails
 
 	async execute(_toolCallId: string, params: typeof swarmSchema.infer): Promise<AgentToolResult<SwarmToolDetails>> {
 		const runtime = SwarmRuntime.forSession(this.session);
+		const hub = SwarmHub.global();
 		const baseDetails: SwarmToolDetails = {
 			tool: "swarm",
 			action: params.action,
-			swarmDir: runtime.store.dir,
+			swarmDir: runtime.dir,
 		};
 
 		try {
 			switch (params.action) {
 				case "status": {
 					const text = await runtime.formatStatusMarkdown(this.session.agentRegistry);
-					const snap = await runtime.store.getSnapshot();
+					const snap = await hub.getSnapshot(runtime.dir);
 					return {
 						content: [{ type: "text", text }],
 						details: { ...baseDetails, head: snap.head, swarmId: snap.roster?.swarm_id },
@@ -97,12 +99,12 @@ export class SwarmTool implements AgentTool<typeof swarmSchema, SwarmToolDetails
 					if ((this.session.taskDepth ?? 0) === 0) {
 						await runtime.ensureCoordinatorSwarm(this.session, params.title);
 					}
-					promoteSwarmToolsOnSession(this.session);
-					const snap = await runtime.store.getSnapshot();
+					await promoteSwarmToolsOnSession(this.session);
+					const snap = await hub.getSnapshot(runtime.dir);
 					const actor = runtime.resolveActorName(this.session, snap.roster);
-					const roster = await runtime.store.setTitle(actor, params.title ?? "");
+					const roster = await hub.setTitle(runtime.dir, actor, params.title ?? "");
 					return {
-						content: [{ type: "text", text: `Titled swarm "${roster.title}" (SWARM_DIR=${runtime.store.dir}).` }],
+						content: [{ type: "text", text: `Titled swarm "${roster.title}" (SWARM_DIR=${runtime.dir}).` }],
 						details: { ...baseDetails, swarmId: roster.swarm_id, actor },
 					};
 				}
@@ -154,7 +156,7 @@ export class SwarmTool implements AgentTool<typeof swarmSchema, SwarmToolDetails
 					});
 					return {
 						content: [{ type: "text", text: res.text }],
-						details: baseDetails,
+						details: { ...baseDetails, selfSwitch: res.selfSwitch },
 					};
 				}
 				case "channel": {
@@ -167,11 +169,11 @@ export class SwarmTool implements AgentTool<typeof swarmSchema, SwarmToolDetails
 					}
 					if ((this.session.taskDepth ?? 0) === 0 && op === "create") {
 						await runtime.ensureCoordinatorSwarm(this.session);
-						promoteSwarmToolsOnSession(this.session);
+						await promoteSwarmToolsOnSession(this.session);
 					}
-					const snap = await runtime.store.getSnapshot();
+					const snap = await hub.getSnapshot(runtime.dir);
 					const actor = runtime.resolveActorName(this.session, snap.roster);
-					const res = await runtime.store.executeChannelOp({
+					const res = await hub.executeChannelOp(runtime.dir, {
 						actor,
 						op,
 						channel: params.channel,
@@ -210,7 +212,7 @@ export class PostMessageTool implements AgentTool<typeof postMessageSchema, Swar
 		const runtime = SwarmRuntime.forSession(this.session);
 		const baseDetails: SwarmToolDetails = {
 			tool: "post_message",
-			swarmDir: runtime.store.dir,
+			swarmDir: runtime.dir,
 		};
 		try {
 			const { actor, message, warnings } = await runtime.postAndRing({
@@ -253,21 +255,22 @@ export class ReadBoardTool implements AgentTool<typeof readBoardSchema, SwarmToo
 		params: typeof readBoardSchema.infer,
 	): Promise<AgentToolResult<SwarmToolDetails>> {
 		const runtime = SwarmRuntime.forSession(this.session);
+		const hub = SwarmHub.global();
 		const baseDetails: SwarmToolDetails = {
 			tool: "read_board",
-			swarmDir: runtime.store.dir,
+			swarmDir: runtime.dir,
 		};
 		try {
 			if (params.status === true) {
-				const table = await runtime.formatMonitorStatusTable(this.session.agentRegistry);
-				const snap = await runtime.store.getSnapshot();
+				const table = await runtime.formatMonitorStatusTable();
+				const snap = await hub.getSnapshot(runtime.dir);
 				return {
 					content: [{ type: "text", text: table }],
 					details: { ...baseDetails, head: snap.head },
 				};
 			}
 
-			const snap = await runtime.store.getSnapshot();
+			const snap = await hub.getSnapshot(runtime.dir);
 			if (!snap.roster) {
 				return {
 					content: [{ type: "text", text: "No swarm yet (0 messages)." }],
@@ -275,7 +278,7 @@ export class ReadBoardTool implements AgentTool<typeof readBoardSchema, SwarmToo
 				};
 			}
 			const actor = runtime.resolveActorName(this.session, snap.roster);
-			const view = await runtime.store.readView({
+			const view = await hub.readView(runtime.dir, {
 				memberName: actor,
 				since: params.since,
 				limit: params.limit,
@@ -336,18 +339,27 @@ export class SwarmWaitTool implements AgentTool<typeof swarmWaitSchema, SwarmToo
 		const runtime = SwarmRuntime.forSession(this.session);
 		const baseDetails: SwarmToolDetails = {
 			tool: "swarm_wait",
-			swarmDir: runtime.store.dir,
+			swarmDir: runtime.dir,
 		};
 		try {
 			const res = await runtime.waitForBoard({
 				session: this.session,
 				since: params.since,
 				mentionsOnly: params.mentions_only ?? true,
+				timeoutMs: params.timeout_ms,
 				signal,
 			});
 			return {
 				content: [{ type: "text", text: res.text }],
-				details: { ...baseDetails, head: res.head, interrupted: res.interrupted },
+				details: {
+					...baseDetails,
+					head: res.head,
+					interrupted: res.interrupted,
+					parked: res.parked,
+					waitSince: res.waitSince,
+					wakeMode: res.wakeMode,
+					timeoutMs: params.timeout_ms,
+				},
 			};
 		} catch (err) {
 			return errorResult(err instanceof Error ? err.message : String(err), baseDetails);

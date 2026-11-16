@@ -16,6 +16,7 @@ import { memoryThreadService } from "./memory";
 import { runtimeThreadService } from "./runtime";
 import { runtimeIdentityThreadService } from "./runtime-identity";
 import { settingsThreadService } from "./settings";
+import { swarmThreadService } from "./swarm";
 import { telemetryThreadService } from "./telemetry";
 
 export const THREAD_SERVICES: readonly ThreadService[] = [
@@ -26,6 +27,7 @@ export const THREAD_SERVICES: readonly ThreadService[] = [
 	settingsThreadService,
 	authService,
 	agentsThreadService,
+	swarmThreadService,
 	lspThreadService,
 	telemetryThreadService,
 	memoryThreadService,

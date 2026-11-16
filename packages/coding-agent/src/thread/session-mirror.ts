@@ -55,10 +55,10 @@ import type { IdleMaintenanceOptions } from "../session/idle-maintenance";
 import type { CustomMessage } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { ModelUsageEntry, SessionEntry, UsageStatistics } from "../session/session-entries";
+import type { SwarmWakeNotice } from "../swarm/hub";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { RemoteObject, RpcMethod } from "./rpc";
-
 /** Data a session homed on another thread exposes synchronously. */
 export interface SessionMirrorState {
 	isStreaming: boolean;
@@ -231,6 +231,7 @@ export type SessionHostProtocol = {
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
 	dispose: RpcMethod<[options?: AgentSessionDisposeOptions], void>;
 	deliverIrcMessage: RpcMethod<[msg: IrcMessage], "injected" | "woken">;
+	deliverSwarmWake: RpcMethod<[notice: SwarmWakeNotice], void>;
 	waitForIrcReplies: RpcMethod<[], void>;
 	setWorkPoolYieldItems: RpcMethod<[items: readonly WorkPoolYieldItem[]], void>;
 	emitIrcRelayObservation: RpcMethod<[record: CustomMessage], void>;
@@ -265,6 +266,18 @@ export type SessionHostProtocol = {
 	abortRetry: RpcMethod<[], void>;
 	abortCompaction: RpcMethod<[reason?: unknown], void>;
 	abortHandoff: RpcMethod<[], void>;
+	setModel: RpcMethod<
+		[
+			model: Model,
+			role?: string,
+			options?: {
+				selector?: string;
+				thinkingLevel?: ThinkingLevel;
+				persist?: boolean;
+			},
+		],
+		{ switched: boolean }
+	>;
 	setModelTemporary: RpcMethod<
 		[model: Model, thinkingLevel?: ConfiguredThinkingLevel, options?: { ephemeral?: boolean }],
 		void
@@ -317,6 +330,22 @@ export type SessionBridgeProtocol = {
 	abort: RpcMethod<[session: AgentSessionHandle, options?: SessionAbortOptions], void>;
 	dispose: RpcMethod<[session: AgentSessionHandle, options?: AgentSessionDisposeOptions], void>;
 	deliverIrcMessage: RpcMethod<[session: AgentSessionHandle, msg: IrcMessage], "injected" | "woken">;
+	deliverSwarmWake: RpcMethod<[session: AgentSessionHandle, notice: SwarmWakeNotice], void>;
+	setModel: RpcMethod<
+		[
+			session: AgentSessionHandle,
+			model: Model,
+			role?: string,
+			options?: {
+				selector?: string;
+				thinkingLevel?: ThinkingLevel;
+				persist?: boolean;
+			},
+		],
+		{ switched: boolean }
+	>;
+	ensureSessionOnDisk: RpcMethod<[session: AgentSessionHandle], void>;
+	flushSessionTranscript: RpcMethod<[session: AgentSessionHandle], void>;
 	waitForIrcReplies: RpcMethod<[session: AgentSessionHandle], void>;
 	setWorkPoolYieldItems: RpcMethod<[session: AgentSessionHandle, items: readonly WorkPoolYieldItem[]], void>;
 	emitIrcRelayObservation: RpcMethod<[session: AgentSessionHandle, record: CustomMessage], void>;

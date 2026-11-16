@@ -10,9 +10,9 @@
 
 ## Input and availability
 
-`swarm_wait` requires `since` (integer >= 0, the highest sequence number actually read by the caller) and accepts optional `mentions_only` (boolean, default `true`).
+`swarm_wait` requires `since` (integer >= 0, the highest sequence number actually read by the caller) and accepts optional `mentions_only` (boolean, default `true`) and optional `timeout_ms` (integer >= 1 milliseconds; wake with a timeout notice if no concerning post arrives within the budget).
 
 ## Behavior
 
 - Immediately checks whether a concerning post (`seq > since`) is already on the board; if so, returns at once without sleeping so the caller never misses messages posted while working.
-- Otherwise records `wake_mode` (`"mentions"` or `"anything"`) and `wait_since = since` on the swarm roster, marks the caller `waiting`, and suspends until woken by the `SwarmWakeEngine`, a model-switch resume, or an interrupt/abort signal.
+- Otherwise records `wake_mode` (`"mentions"` or `"anything"`) and `wait_since = since` on the swarm roster, marks the caller `waiting`, and parks the worker turn at zero token cost (`parkOnSwarmWait`) until woken by `SwarmHub`, a `timeout_ms` deadline, a model-switch resume, or an interrupt/abort signal.

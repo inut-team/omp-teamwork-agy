@@ -26,7 +26,7 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
   6. Bento grids stuffed with decorative icons.
   7. Pulsing dot "biscuit/pill" badges above `<h1>`.
   8. CSS gradient text fills across headline keywords.
-  9. Grid-line / particle-mesh backgrounds, or rounded cards nested >=3 levels deep.
+  9. Grid-line / particle-mesh backgrounds, or rounded cards nested ≥3 levels deep.
 </critical>
 
 <workflow>
@@ -34,7 +34,7 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
    - Classify surface goal (`Persuade` landing/marketing, `Operate` app/dashboard/tool, `Read` docs/editorial, or `Experience` showcase).
    - Inspect existing framework, package scripts, fonts, and CSS variables so new work integrates cleanly (or replaces coherently on a full redesign).
 2. **Design-System Foundation (`index.css` / Theme Tokens)**:
-   - Define harmonious HSL/OKLCH semantic surfaces, foreground/muted contrast hierarchy, border hairlines, elevation shadows, fluid spacing, and expressive Google Fonts pairing (`>=12px` minimum text floor).
+   - Define harmonious HSL/OKLCH semantic surfaces, foreground/muted contrast hierarchy, border hairlines, elevation shadows, fluid spacing, and expressive Google Fonts pairing (`≥12px` minimum text floor).
 3. **Parallel Bespoke Imagery (`generate_image` / `teamwork-image-generator`)**:
    - Identify every visual asset needed (hero art, product shots, avatars, empty-state illustrations, brand marks) and generate real high-contrast files directly into project asset paths (`output_path`).
 4. **Component & Page Craft**:

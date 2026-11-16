@@ -80,8 +80,7 @@ import { WriteTool } from "./write";
 import { WaitTool } from "./wait";
 import { isMountableUnderXdev, resolveXdevTool, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
-import { PostMessageTool, ReadBoardTool, SwarmTool, SwarmWaitTool } from "../swarm";
-
+import { PostMessageTool, ReadBoardTool, type SwarmContext, SwarmTool, SwarmWaitTool } from "../swarm";
 import {
 	cfgAskEnabled,
 	cfgAstEditEnabled,
@@ -585,8 +584,25 @@ export interface ToolSession {
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
 	/** Return image attachments visible to tools for resolving labels such as `Image #1`. */
 	getImageAttachments?: () => ImageAttachmentEntry[];
+	/** Swarm membership identity for this session (`swarmDir` + `memberName`). */
+	swarmContext?: SwarmContext;
+	/** Bind swarm context dynamically when a coordinator starts `/swarm` or `swarm{action:"add"}`. */
+	setSwarmContext?: (ctx: SwarmContext) => void;
+	/** True inside AgentSession so worker `swarm_wait` uses Park-on-Yield instead of blocking the turn. */
+	parkOnSwarmWait?: boolean;
+	/** Advance the session's monotonic board-head watermark after reading messages. */
+	advanceSwarmHeadWatermark?: (head: number) => void;
+	/** Promote top-level swarm tools out of `xd://` on the backing session. */
+	promoteSwarmTools?: () => Promise<void>;
+	/** Queue a deferred self-model switch cleanly once the current tool turn settles. */
+	scheduleSwarmSelfModelSwitch?: (request: {
+		swarmDir: string;
+		memberName: string;
+		agentId: string;
+		model: Model;
+		modelLabel: string;
+	}) => void;
 }
-
 export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool | null>;
 
 /**

@@ -5,7 +5,8 @@
 ## Source
 
 - Entry: `packages/coding-agent/src/swarm/tools.ts`
-- Runtime & Wake Engine: `packages/coding-agent/src/swarm/runtime.ts`
+- Runtime & Lifecycle: `packages/coding-agent/src/swarm/runtime.ts`
+- Cross-thread Hub & Wake Engine: `packages/coding-agent/src/swarm/hub.ts`
 - Board Store: `packages/coding-agent/src/swarm/store.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/swarm.md`
 

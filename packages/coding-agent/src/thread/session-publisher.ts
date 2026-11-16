@@ -553,6 +553,7 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 	abort: async (publisher, options) => settle(publisher, publisher.session.abort(options)),
 	dispose: async (publisher, options) => settle(publisher, publisher.session.dispose(options)),
 	deliverIrcMessage: async (publisher, msg) => settle(publisher, publisher.session.deliverIrcMessage(msg)),
+	deliverSwarmWake: async (publisher, notice) => settle(publisher, publisher.session.deliverSwarmWake(notice)),
 	waitForIrcReplies: async publisher => settle(publisher, publisher.session.waitForIrcReplies()),
 	setWorkPoolYieldItems: async (publisher, items) => settle(publisher, publisher.session.setWorkPoolYieldItems(items)),
 	emitIrcRelayObservation: (publisher, record) => publisher.session.emitIrcRelayObservation(record),
@@ -603,6 +604,8 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 		publisher.session.abortHandoff();
 		publisher.schedule();
 	},
+	setModel: async (publisher, model, role, options) =>
+		settle(publisher, publisher.session.setModel(localModel(publisher.session, model), role, options)),
 	setModelTemporary: async (publisher, model, thinkingLevel, options) =>
 		settle(
 			publisher,

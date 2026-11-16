@@ -195,7 +195,7 @@ import { MAGIC_KEYWORDS, type MagicKeywordContext, type MagicKeywordId } from ".
 import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
-import { expandAgyCompatSlashCommand } from "../slash-commands/builtin-agy-compat";
+import { expandAgyCompatSlashCommand, isSwarmCoordinatorStartCommand } from "../slash-commands/builtin-agy-compat";
 import { computeNonMessageTokens, type SystemPromptSources } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile, resolvePlanFilePath } from "../plan-mode/plan-files";
@@ -231,6 +231,12 @@ import { cfgSecretsEnabled } from "../secrets/settings";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
 import { toolReadsSkillUris } from "../system-prompt";
+import boardNoticeTemplate from "../prompts/swarm/board-notice.md" with { type: "text" };
+import headNudgeTemplate from "../prompts/swarm/head-nudge.md" with { type: "text" };
+import parkGuardTemplate from "../prompts/swarm/park-guard.md" with { type: "text" };
+import { SwarmHub, type SwarmWakeNotice } from "../swarm/hub";
+import { resolveSwarmDirFromContext, SWARM_TOOL_NAMES } from "../swarm/runtime";
+import type { SwarmContext } from "../swarm/types";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -1465,6 +1471,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#yieldTerminationPending = false;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
+	#swarmContext: SwarmContext | undefined = undefined;
+	#swarmHeadWatermark = 0;
+	#swarmParkGuardBlockCount = 0;
+	#swarmParkTerminationPending = false;
+	#pendingSwarmWakes: SwarmWakeNotice[] = [];
+	#swarmDrainScheduled = false;
+	#pendingSwarmModelSwitch:
+		| {
+				swarmDir: string;
+				memberName: string;
+				agentId: string;
+				model: Model;
+				modelLabel: string;
+		  }
+		| undefined = undefined;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	readonly #cacheWarmer: CacheWarmer | undefined;
 	/** Transcript the warmer was last armed for: its confirmed entry describes no other transcript. */
@@ -1493,6 +1514,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#recovery.resetForNewPrompt();
 		this.#maintenance.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+		this.#swarmParkGuardBlockCount = 0;
+		this.#swarmParkTerminationPending = false;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -1646,6 +1669,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		this.#scheduleQueuedMessageDrain();
 		this.#resumeStrandedIrcAsides();
+		this.#scheduleDrainPendingSwarmWakes();
 	}
 
 	/** IRC records that arrive after the loop's final aside poll — or while an abort skipped that
@@ -1899,6 +1923,138 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				// Release the in-flight bracket BEFORE settling owned async work.
 				this.#endInFlight(inFlightEpoch);
 				await this.#finishTurnObservation(observation, turnError);
+			});
+	}
+	get swarmContext(): SwarmContext | undefined {
+		return this.#swarmContext;
+	}
+
+	setSwarmContext(ctx: SwarmContext | undefined): void {
+		this.#swarmContext = ctx;
+	}
+
+	advanceSwarmHeadWatermark(head: number): void {
+		if (head > this.#swarmHeadWatermark) this.#swarmHeadWatermark = head;
+	}
+
+	ensureSessionOnDisk(): Promise<void> {
+		return this.sessionManager.ensureOnDisk();
+	}
+
+	flushSessionTranscript(): Promise<void> {
+		return this.sessionManager.flush();
+	}
+
+	scheduleSwarmSelfModelSwitch(request: {
+		swarmDir: string;
+		memberName: string;
+		agentId: string;
+		model: Model;
+		modelLabel: string;
+	}): void {
+		this.#pendingSwarmModelSwitch = request;
+	}
+
+	async promoteSwarmTools(): Promise<void> {
+		const active = new Set(this.getActiveToolNames());
+		const registered = new Set(this.getAllToolNames());
+		let changed = false;
+		for (const name of SWARM_TOOL_NAMES) {
+			if (registered.has(name) && !active.has(name)) {
+				active.add(name);
+				changed = true;
+			}
+		}
+		if (changed) {
+			await this.setActiveToolsByName([...active]);
+		}
+	}
+
+	async deliverSwarmWake(notice: SwarmWakeNotice): Promise<void> {
+		if (this.#isDisposed || this.#planModeState?.enabled) return;
+		this.#pendingSwarmWakes.push(notice);
+		this.#scheduleDrainPendingSwarmWakes();
+	}
+
+	#scheduleDrainPendingSwarmWakes(): void {
+		if (this.#swarmDrainScheduled || this.#pendingSwarmWakes.length === 0 || this.#isDisposed) return;
+		this.#swarmDrainScheduled = true;
+		queueMicrotask(() => {
+			this.#swarmDrainScheduled = false;
+			if (this.#isDisposed || this.#pendingSwarmWakes.length === 0) return;
+			if (this.#planModeState?.enabled || this.#abortInProgress) return;
+			if (this.#unsubscribeAgent === undefined) return;
+			if (this.#workPoolYieldItems.length > 0) return;
+			if (this.#ircWakeHolds > 0 || this.isStreaming || this.isSessionTransitioning || this.hasAdmittedSubmission) {
+				return;
+			}
+			const contextReplacement = this.#maintenance.waitForContextReplacement();
+			if (contextReplacement) {
+				void contextReplacement.then(
+					() => this.#scheduleDrainPendingSwarmWakes(),
+					() => {},
+				);
+				return;
+			}
+			const notices = this.#pendingSwarmWakes.splice(0);
+			if (notices.length === 0) return;
+			const last = notices[notices.length - 1]!;
+			const record: CustomMessage = {
+				role: "custom",
+				customType: "swarm:wake",
+				content: notices.map(n => n.text).join("\n\n"),
+				display: true,
+				details: {
+					swarmWake: true,
+					swarmDir: last.swarmDir,
+					headSeq: last.headSeq,
+					isTimeout: last.isTimeout,
+					isModelSwitch: last.isModelSwitch,
+				},
+				attribution: "agent",
+				timestamp: Date.now(),
+			};
+			this.#wakeForSwarm([record], notices);
+		});
+	}
+
+	#wakeForSwarm(records: CustomMessage[], sourceNotices: readonly SwarmWakeNotice[]): void {
+		if (this.#isDisposed || this.agent.state.isStreaming || this.#ircWakeHolds > 0) {
+			this.#pendingSwarmWakes.unshift(...sourceNotices);
+			return;
+		}
+		this.#resetPromptMaintenanceState();
+		const generation = this.#promptGeneration;
+		const inFlightEpoch = this.#beginInFlight();
+		let observation: TurnObservation | undefined;
+		let turnError: unknown;
+		void this.whenWorkPoolYieldSettled()
+			.then(() => {
+				if (this.#workPoolYieldItems.length > 0 || this.agent.state.isStreaming || this.#ircWakeHolds > 0) {
+					this.#pendingSwarmWakes.unshift(...sourceNotices);
+					return;
+				}
+				observation = this.#startTurnObservation(records);
+				return this.agent.prompt(records);
+			})
+			.catch(error => {
+				if (error instanceof AgentBusyError) {
+					this.#pendingSwarmWakes.unshift(...sourceNotices);
+					return;
+				}
+				turnError = error;
+				logger.warn("Swarm wake turn failed", { error: String(error) });
+			})
+			.finally(async () => {
+				try {
+					await this.#waitForPostPromptRecovery(generation);
+				} catch (error) {
+					turnError ??= error;
+					logger.warn("Swarm wake turn recovery failed", { error: String(error) });
+				}
+				this.#endInFlight(inFlightEpoch);
+				await this.#finishTurnObservation(observation, turnError);
+				this.#scheduleDrainPendingSwarmWakes();
 			});
 	}
 
@@ -2379,6 +2535,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#reconcileBrowserMcpFilter = config.reconcileBrowserMcpFilter;
 		this.#setMcpServerInstructionsSource = config.setMcpServerInstructionsSource;
 		this.#customCommands = config.customCommands ?? [];
+		this.#swarmContext = config.swarmContext;
 		const recoveryHost: TurnRecoveryHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -2626,7 +2783,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// instead of sitting behind it. Deferred wakes are not peeked: no
 		// boundary injection would drain them. Foreground tools are unaffected.
 		this.agent.hasQueuedAsides = () => this.#irc.hasAsides();
-		this.agent.setAsideMessageProvider(boundary => {
+		this.agent.setAsideMessageProvider(async boundary => {
 			// A subagent whose messages get turns of their own (its run holds them,
 			// or its wake observer answers them) never extends a finished turn with
 			// one: that turn's text is its result.
@@ -2648,6 +2805,62 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 						display: false,
 						timestamp: Date.now(),
 					}));
+				}
+			}
+			const swarmCtx = this.#swarmContext;
+			if (swarmCtx && !this.#isDisposed && !this.#abortInProgress && !this.#swarmParkTerminationPending) {
+				try {
+					if (boundary === "work") {
+						const lag = await SwarmHub.global().checkHeadLag(
+							swarmCtx.swarmDir,
+							swarmCtx.memberName,
+							this.#swarmHeadWatermark,
+						);
+						if (lag.hasUnreadVisible && lag.head > lag.lastReadSeq && lag.head > this.#swarmHeadWatermark) {
+							this.#swarmHeadWatermark = lag.head;
+							const text = prompt
+								.render(headNudgeTemplate, {
+									callsOnYou: lag.hasConcerning,
+									headSeq: lag.head,
+									lastReadSeq: lag.lastReadSeq,
+								})
+								.trim();
+							thunks.push(() => ({
+								role: "custom",
+								customType: "swarm:head-nudge",
+								content: text,
+								display: false,
+								attribution: "agent",
+								timestamp: Date.now(),
+							}));
+						}
+					} else if (boundary === "stop") {
+						const isWorker = swarmCtx.memberName !== "coordinator";
+						const guard = await SwarmHub.global().checkAutoParkOnStop(swarmCtx.swarmDir, {
+							memberName: swarmCtx.memberName,
+							isWorker,
+						});
+						if (guard.callsOnYou && this.#swarmParkGuardBlockCount < 3) {
+							this.#swarmParkGuardBlockCount++;
+							const text = prompt
+								.render(parkGuardTemplate, {
+									callsOnYou: true,
+									headSeq: guard.head,
+									lastReadSeq: guard.lastReadSeq,
+								})
+								.trim();
+							thunks.push(() => ({
+								role: "custom",
+								customType: "swarm:park-guard",
+								content: text,
+								display: false,
+								attribution: "agent",
+								timestamp: Date.now(),
+							}));
+						}
+					}
+				} catch (error) {
+					logger.debug("Swarm aside hook failed", { error: String(error) });
 				}
 			}
 			return thunks;
@@ -5171,7 +5384,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// the executor consumed the yield as the terminal result, so a trailing
 			// empty/aborted assistant stop must NOT revive the agent loop. The
 			// `#yieldTerminationPending` sticky flag clears on the next `prompt()`.
-			if (successfulYieldMessage || this.#yieldTerminationPending) {
+			if (successfulYieldMessage || this.#yieldTerminationPending || this.#swarmParkTerminationPending) {
 				this.#lastSuccessfulYieldToolCallId = undefined;
 				if (successfulYieldMessage && activeGoal) {
 					maintenanceRoute(
@@ -5412,6 +5625,37 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// way inside #checkTodoCompletion).
 			if (this.#hasPendingAsyncWake()) {
 				await emitAgentEndNotification({ willContinue: true, awaitingAsyncWork: true });
+				return;
+			}
+			const pendingSwarmModelSwitch = this.#pendingSwarmModelSwitch;
+			if (pendingSwarmModelSwitch && !this.#abortInProgress && !this.#isDisposed) {
+				this.#pendingSwarmModelSwitch = undefined;
+				const switchNoticeText = prompt
+					.render(boardNoticeTemplate, {
+						isModelSwitch: true,
+						selfSwitched: true,
+						isCoordinator: pendingSwarmModelSwitch.memberName === "coordinator",
+						model: pendingSwarmModelSwitch.modelLabel,
+					})
+					.trim();
+				this.#schedulePostPromptTask(async () => {
+					if (this.#isDisposed) return;
+					if (this.isStreaming) await this.agent.waitForIdle();
+					await this.setModel(pendingSwarmModelSwitch.model);
+					await SwarmHub.global().notifyModelSwitched(pendingSwarmModelSwitch.swarmDir, {
+						memberName: pendingSwarmModelSwitch.memberName,
+						targetAgentId: pendingSwarmModelSwitch.agentId,
+						actor: pendingSwarmModelSwitch.memberName,
+						selfSwitch: true,
+						modelLabel: pendingSwarmModelSwitch.modelLabel,
+					});
+					await this.deliverSwarmWake({
+						swarmDir: pendingSwarmModelSwitch.swarmDir,
+						text: switchNoticeText,
+						isModelSwitch: true,
+					});
+				});
+				await emitAgentEndNotification({ willContinue: true });
 				return;
 			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
@@ -5801,6 +6045,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+		if (ctx.toolCall.name === "read_board" && !ctx.isError && isRecord(ctx.result?.details)) {
+			const head = ctx.result.details.head;
+			if (typeof head === "number") {
+				this.advanceSwarmHeadWatermark(head);
+			}
+		}
+		if (
+			ctx.toolCall.name === "swarm_wait" &&
+			!ctx.isError &&
+			isRecord(ctx.result?.details) &&
+			ctx.result.details.parked === true
+		) {
+			this.#swarmParkTerminationPending = true;
+			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+		}
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -6682,6 +6941,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.agent.hasQueuedAsides = undefined;
 		this.#advisors.stopRuntime();
 		this.#eval.beginDispose();
+		this.#pendingSwarmWakes = [];
+		this.#pendingSwarmModelSwitch = undefined;
 	}
 
 	/**
@@ -8873,6 +9134,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				text = expandSlashCommand(text, this.#slashCommands);
 			}
 			if (text.startsWith("/")) {
+				if (isSwarmCoordinatorStartCommand(text)) {
+					await this.promoteSwarmTools();
+					const swarmDir = resolveSwarmDirFromContext({
+						cwd: this.sessionManager.getCwd(),
+						artifactsDir: this.sessionManager.getArtifactsDir(),
+						sessionFile: this.sessionManager.getSessionFile(),
+						sessionId: this.sessionManager.getSessionId(),
+					});
+					this.#swarmContext ??= { swarmDir, memberName: "coordinator" };
+				}
 				text = await expandAgyCompatSlashCommand(text, this.sessionManager.getCwd());
 			}
 		}
@@ -12406,6 +12677,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#planReferencePath = "local://PLAN.md";
 			this.#planReferenceApproved = false;
 			this.#advisors.resetSessionState();
+			this.#swarmContext = undefined;
+			this.#swarmHeadWatermark = 0;
+			this.#pendingSwarmWakes = [];
+			this.#pendingSwarmModelSwitch = undefined;
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
 			await this.#reconcileModeAfterTransition();
@@ -13658,6 +13933,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			released = true;
 			this.#ircWakeHolds--;
 			this.#resumeStrandedIrcAsides();
+			this.#scheduleDrainPendingSwarmWakes();
 			this.#notifyIrcWakeHolds();
 		};
 	}
@@ -14382,6 +14658,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#releaseHeldQueuedMessages([...previousSteeringMessages, ...previousFollowUpMessages]);
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
+			}
+			if (switchingToDifferentSession) {
+				this.#swarmContext = undefined;
+				this.#swarmHeadWatermark = 0;
+				this.#pendingSwarmWakes = [];
+				this.#pendingSwarmModelSwitch = undefined;
 			}
 			generationSettled.resolve();
 			this.#sessionGenerationSettled = previousSessionGenerationSettled;

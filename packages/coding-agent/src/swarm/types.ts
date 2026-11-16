@@ -54,6 +54,7 @@ export interface SwarmMemberRecord {
 	killed: boolean;
 	last_error?: string;
 	quota_exhausted?: boolean;
+	sit_out_until_seq?: number;
 	workspace_note?: string;
 	updated_at: string;
 }
@@ -149,4 +150,60 @@ export interface SwarmToolDetails {
 	killed?: string[];
 	channel?: string;
 	interrupted?: boolean;
+	parked?: boolean;
+	waitSince?: number;
+	wakeMode?: SwarmWakeMode;
+	timeoutMs?: number;
+	selfSwitch?: boolean;
 }
+
+/** Identity of a live session participating in a swarm. */
+export interface SwarmContext {
+	readonly swarmDir: string;
+	readonly memberName: string;
+}
+
+export interface SwarmHeadLagResult {
+	readonly head: number;
+	readonly lastReadSeq: number;
+	readonly hasUnreadVisible: boolean;
+	readonly hasConcerning: boolean;
+	readonly firstConcerningSeq?: number;
+}
+
+export interface SwarmWaitImmediateMatch {
+	readonly head: number;
+	readonly matching: SwarmBoardMessage[];
+	readonly lastReadSeq: number;
+}
+
+export interface SwarmParkTurnResult {
+	readonly parked: boolean;
+	readonly immediate?: SwarmWaitImmediateMatch;
+	readonly head: number;
+}
+
+export interface SwarmAutoParkResult {
+	readonly parked: boolean;
+	readonly callsOnYou: boolean;
+	readonly hasUnread: boolean;
+	readonly head: number;
+	readonly lastReadSeq: number;
+}
+
+export type SwarmWaitSignalEvent =
+	| {
+			readonly kind: "message";
+			readonly message: SwarmBoardMessage;
+			readonly head: number;
+			readonly lastReadSeq: number;
+			readonly immediate?: boolean;
+	  }
+	| {
+			readonly kind: "model_switch";
+			readonly text: string;
+			readonly head: number;
+	  }
+	| { readonly kind: "timeout"; readonly head: number; readonly lastReadSeq: number }
+	| { readonly kind: "killed" }
+	| { readonly kind: "aborted"; readonly head: number };

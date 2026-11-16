@@ -343,7 +343,7 @@ describe("Native Swarm (Antigravity v1.5.5 parity)", () => {
 
 		// Unaddressed post #3 does NOT wake verifier (mentions_only: true)
 		await authorPost.execute("w4", { text: "Refactored helper function internally" });
-		expect(runtime.isParked("verifier")).toBe(true);
+		expect(await runtime.isParked("verifier")).toBe(true);
 		// Direct @verifier post #4 rings doorbell and resolves sleepingPromise with both #3 and #4!
 		await authorPost.execute("w5", { text: "@verifier ready for round 2 review (#3)" });
 		const wokenResult = await sleepingPromise;

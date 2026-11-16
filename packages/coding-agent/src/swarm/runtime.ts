@@ -1,15 +1,15 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import boardNoticeTemplate from "../prompts/swarm/board-notice.md" with { type: "text" };
 import workerBriefingTemplate from "../prompts/swarm/worker-briefing.md" with { type: "text" };
-import { IrcBus } from "../irc/bus";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { isLocalAgentSession } from "../session/agent-session-handle";
+import { resolveEffectiveSubagentPolicy, runStructuredSubagent } from "../task/structured-subagent";
 import { createSubagentSettings } from "../task/executor";
-import { runStructuredSubagent } from "../task/structured-subagent";
 import type { ToolSession } from "../tools";
+import { isSwarmQuotaError, SwarmHub } from "./hub";
 import {
 	countsAsUnread,
 	effectiveChannels,
@@ -37,34 +37,7 @@ import type {
 	SwarmWorkspaceMode,
 } from "./types";
 
-const QUOTA_ERROR_RE = /RESOURCE_EXHAUSTED|quota|\b429\b|exhausted your capacity|rate.?limit/i;
-
 export const SWARM_TOOL_NAMES = ["swarm", "post_message", "read_board", "swarm_wait"] as const;
-
-type SwarmWakeEvent =
-	| {
-			kind: "message";
-			message: SwarmBoardMessage;
-			head: number;
-			lastReadSeq: number;
-	  }
-	| {
-			kind: "model_switch";
-			actorLabel: string;
-			selfSwitched: boolean;
-			isCoordinator: boolean;
-			model: string;
-	  }
-	| {
-			kind: "killed";
-	  };
-
-interface SwarmWaiter {
-	memberName: string;
-	since: number;
-	mentionsOnly: boolean;
-	resolve: (event: SwarmWakeEvent) => void;
-}
 
 interface ActiveWorkerRun {
 	memberName: string;
@@ -75,8 +48,14 @@ interface ActiveWorkerRun {
 
 /** Resolve the shared swarm directory (`SWARM_DIR`) for any session in the tree (coordinator or nested worker). */
 export function resolveSwarmDir(
-	session: Pick<ToolSession, "cwd" | "getArtifactsDir" | "getSessionFile" | "getSessionId" | "localProtocolOptions">,
+	session: Pick<
+		ToolSession,
+		"cwd" | "getArtifactsDir" | "getSessionFile" | "getSessionId" | "localProtocolOptions" | "swarmContext"
+	>,
 ): string {
+	if (session.swarmContext?.swarmDir) {
+		return path.resolve(session.swarmContext.swarmDir);
+	}
 	const rootArtifactsDir =
 		session.localProtocolOptions?.getArtifactsDir?.() ??
 		session.getArtifactsDir?.() ??
@@ -101,7 +80,7 @@ export function resolveSwarmDirFromContext(options: {
 }
 
 /** Promote `swarm`, `post_message`, `read_board`, and `swarm_wait` out of `xd://` onto the active tool set when possible. */
-export function promoteSwarmToolsOnSession(session: ToolSession): void {
+export async function promoteSwarmToolsOnSession(session: ToolSession): Promise<void> {
 	if (session.xdev) {
 		for (const name of SWARM_TOOL_NAMES) {
 			session.xdev.mountedNames.delete(name);
@@ -116,6 +95,7 @@ export function promoteSwarmToolsOnSession(session: ToolSession): void {
 		}
 		session.setActiveToolNames(active);
 	}
+	await session.promoteSwarmTools?.();
 }
 
 function formatModelLabel(model: Model | undefined, fallback?: string): string {
@@ -134,10 +114,21 @@ function relativeAge(isoTime?: string): string {
 	return `${Math.floor(hours / 24)} days ago`;
 }
 
+async function directoryExists(targetPath: string): Promise<boolean> {
+	try {
+		const st = await fs.stat(targetPath);
+		return st.isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 /**
- * Process-scoped Swarm Runtime & Wake Engine per `swarmDir`, coordinating
- * `SwarmBoardStore`, in-memory zero-token `swarm_wait` waiters, `IrcBus` wakeups,
- * worker spawning, `fork`, `workspace` isolation, and live model switching.
+ * Thread-aware Swarm Runtime facade per `swarmDir`.
+ *
+ * Delegates all shared state, board locking, parking, waiters, and wake routing
+ * through `SwarmHub.global()`, so coordinator sessions on main and worker/subagent
+ * sessions on Bun worker threads share one authoritative runtime.
  */
 export class SwarmRuntime {
 	static readonly #instances = new Map<string, SwarmRuntime>();
@@ -150,7 +141,7 @@ export class SwarmRuntime {
 		const resolved = path.resolve(swarmDir);
 		let inst = SwarmRuntime.#instances.get(resolved);
 		if (!inst) {
-			inst = new SwarmRuntime(SwarmBoardStore.forDir(resolved));
+			inst = new SwarmRuntime(resolved);
 			SwarmRuntime.#instances.set(resolved, inst);
 		}
 		return inst;
@@ -161,17 +152,19 @@ export class SwarmRuntime {
 			inst.#disposeForTests();
 		}
 		SwarmRuntime.#instances.clear();
-		SwarmBoardStore.resetForTests();
+		SwarmHub.resetGlobalForTests();
 	}
 
-	readonly store: SwarmBoardStore;
-	readonly #waiters = new Map<string, Set<SwarmWaiter>>();
-	readonly #parkedListeners = new Map<string, Set<() => void>>();
+	readonly dir: string;
 	readonly #activeRuns = new Map<string, ActiveWorkerRun>();
-	readonly #agentIdToMember = new Map<string, string>();
 
-	constructor(store: SwarmBoardStore) {
-		this.store = store;
+	constructor(swarmDir: string) {
+		this.dir = path.resolve(swarmDir);
+	}
+
+	/** Local board store handle (for metadata inspection and main-thread test utilities). */
+	get store(): SwarmBoardStore {
+		return SwarmBoardStore.forDir(this.dir);
 	}
 
 	#disposeForTests(): void {
@@ -179,49 +172,36 @@ export class SwarmRuntime {
 			run.abortController.abort("test reset");
 		}
 		this.#activeRuns.clear();
-		this.#parkedListeners.clear();
-		this.#waiters.clear();
-		this.#agentIdToMember.clear();
 	}
 
 	/** True while `memberName` is actively parked in `swarm_wait`. */
-	isParked(memberName: string): boolean {
-		return (this.#waiters.get(memberName)?.size ?? 0) > 0;
+	isParked(memberName: string): Promise<boolean> {
+		return SwarmHub.global().isParked(this.dir, memberName);
 	}
 
 	/** Resolves once `memberName` enters `swarm_wait` (or immediately if already parked). */
 	waitUntilParked(memberName: string): Promise<void> {
-		if (this.isParked(memberName)) return Promise.resolve();
-		const { promise, resolve } = Promise.withResolvers<void>();
-		let listeners = this.#parkedListeners.get(memberName);
-		if (!listeners) {
-			listeners = new Set();
-			this.#parkedListeners.set(memberName, listeners);
-		}
-		listeners.add(resolve);
-		return promise;
+		return SwarmHub.global().waitUntilParked(this.dir, memberName);
 	}
 
 	/** Bind a registry `agentId` to its canonical swarm `memberName`. */
 	registerAgentBinding(agentId: string, memberName: string): void {
-		this.#agentIdToMember.set(agentId, memberName);
+		SwarmHub.global().registerAgentBinding(this.dir, agentId, memberName);
 	}
 
 	/** Resolve which swarm member `session` represents (`"coordinator"` at depth 0, else worker roster name). */
 	resolveActorName(session: ToolSession, roster: SwarmRosterFile | null): string {
+		if (session.swarmContext?.memberName) {
+			return session.swarmContext.memberName;
+		}
 		const agentId = session.getAgentId?.() ?? MAIN_AGENT_ID;
 		if ((session.taskDepth ?? 0) === 0 || agentId === MAIN_AGENT_ID) {
 			return "coordinator";
-		}
-		const mapped = this.#agentIdToMember.get(agentId);
-		if (mapped && (!roster || roster.members[mapped])) {
-			return mapped;
 		}
 		if (roster) {
 			if (roster.members[agentId]) return agentId;
 			for (const member of Object.values(roster.members)) {
 				if (member.agent_id === agentId || agentId.endsWith(`.${member.name}`)) {
-					this.#agentIdToMember.set(agentId, member.name);
 					return member.name;
 				}
 			}
@@ -230,28 +210,14 @@ export class SwarmRuntime {
 	}
 
 	/** Compute a member's live status (`killed` | `waiting` | `working` | `stopped`) matching `board.StateOf`. */
-	memberStatusOf(member: SwarmMemberRecord, registry?: AgentRegistryApi): SwarmMemberStatus {
+	memberStatusOf(member: SwarmMemberRecord): SwarmMemberStatus {
 		if (member.killed) return "killed";
-		const waiters = this.#waiters.get(member.name);
-		if (waiters && waiters.size > 0) return "waiting";
-		const run = this.#activeRuns.get(member.name);
-		if (run?.running) return "working";
-		const reg = registry ?? AgentRegistry.global();
-		const ref = reg.get(member.agent_id);
-		if (member.name === "coordinator") {
-			if (ref?.session?.isStreaming) return "working";
-			return "waiting";
+		const status = SwarmHub.global().getMemberStatus(this.dir, member);
+		if (status === "stopped") {
+			const localRun = this.#activeRuns.get(member.name);
+			if (localRun?.running) return "working";
 		}
-		if (!ref) {
-			return "stopped";
-		}
-		if (ref.status === "running" || ref.session?.isStreaming) {
-			return "working";
-		}
-		if (ref.status === "parked") {
-			return "stopped";
-		}
-		return "waiting";
+		return status;
 	}
 
 	/** Ensure the swarm is initialized on disk for `session` when the coordinator starts it. */
@@ -264,13 +230,13 @@ export class SwarmRuntime {
 			session.getActiveModel?.(),
 			session.getActiveModelString?.() ?? session.getModelString?.(),
 		);
-		const roster = await this.store.ensureSwarm({
+		const roster = await SwarmHub.global().ensureCoordinatorSwarm(this.dir, {
 			coordinatorAgentId,
 			coordinatorConversationId: coordinatorConvId,
 			model: activeModel,
 			title,
 		});
-		this.#agentIdToMember.set(coordinatorAgentId, "coordinator");
+		session.setSwarmContext?.({ swarmDir: this.dir, memberName: "coordinator" });
 		return roster;
 	}
 
@@ -280,102 +246,19 @@ export class SwarmRuntime {
 		text: string;
 		channel?: string;
 	}): Promise<{ actor: string; message: SwarmBoardMessage; warnings: string[] }> {
-		const snap = await this.store.getSnapshot();
+		const snap = await SwarmHub.global().getSnapshot(this.dir);
 		if (!snap.roster) {
 			throw new Error("no swarm yet; add a worker to start one");
 		}
 		const actor = this.resolveActorName(params.session, snap.roster);
-		const { message, warnings, roster } = await this.store.postMessage({
-			author: actor,
+		const senderAgentId = params.session.getAgentId?.() ?? snap.roster.members[actor]?.agent_id ?? MAIN_AGENT_ID;
+		const { message, warnings } = await SwarmHub.global().postMessage(this.dir, {
+			actor,
 			text: params.text,
 			channel: params.channel,
-			kind: "post",
+			senderAgentId,
 		});
-		const senderAgentId = params.session.getAgentId?.() ?? roster.members[actor]?.agent_id ?? MAIN_AGENT_ID;
-		await this.ring(message, roster, senderAgentId, params.session.agentRegistry);
 		return { actor, message, warnings };
-	}
-
-	/** Wake sleeping `swarm_wait` callers and idle/parked `AgentSession` peers who are concerned by `message`. */
-	async ring(
-		message: SwarmBoardMessage,
-		roster: SwarmRosterFile,
-		senderAgentId: string,
-		registry?: AgentRegistryApi,
-	): Promise<void> {
-		const reg = registry ?? AgentRegistry.global();
-		const channelMap = new Map<string, SwarmChannelInfo>(roster.channels.map(c => [c.name, c]));
-		const isActiveChannel = (ch: string) => {
-			const info = channelMap.get(ch);
-			return Boolean(info && !info.archived);
-		};
-
-		const wakePromises: Promise<unknown>[] = [];
-		for (const member of Object.values(roster.members)) {
-			if (member.killed || member.name === message.agent) continue;
-			const memberSet = effectiveChannels(member.role, member.channels, member.name);
-			const concerned =
-				member.wake_mode === "anything"
-					? seesIn(member.name, memberSet, message, isActiveChannel) && countsAsUnread(message)
-					: mentionsIn(message.text, member.name, memberSet, isActiveChannel);
-			if (!concerned) continue;
-
-			// 1. Resolve in-memory `swarm_wait` waiters first (zero overhead, immediate tool return).
-			const waiters = this.#waiters.get(member.name);
-			if (waiters && waiters.size > 0) {
-				const matched = [...waiters].filter(w => message.seq > w.since);
-				if (matched.length > 0) {
-					for (const w of matched) {
-						waiters.delete(w);
-						w.resolve({
-							kind: "message",
-							message,
-							head: message.seq,
-							lastReadSeq: member.last_read_seq,
-						});
-					}
-					continue;
-				}
-			}
-
-			// 2. If the member is NOT currently working a turn, wake/revive its AgentSession via IrcBus!
-			const status = this.memberStatusOf(member, reg);
-			if (status === "waiting" || status === "stopped") {
-				const targetRef = reg.get(member.agent_id);
-				if (!targetRef) continue;
-				const preview = message.text.length > 240 ? `${message.text.slice(0, 239).trimEnd()}…` : message.text;
-				const ch = messageChannelOf(message);
-				const body = prompt
-					.render(boardNoticeTemplate, {
-						isModelSwitch: false,
-						seq: message.seq,
-						sender: message.agent,
-						channelTag: ch !== SWARM_MAIN_CHANNEL ? `#${ch}` : undefined,
-						preview,
-						headSeq: message.seq,
-						lastReadSeq: member.last_read_seq,
-					})
-					.trim();
-				wakePromises.push(
-					IrcBus.global()
-						.send({
-							from: senderAgentId,
-							to: member.agent_id,
-							body,
-						})
-						.catch(err => {
-							logger.debug("SwarmRuntime: failed to nudge member via IrcBus", {
-								member: member.name,
-								agentId: member.agent_id,
-								error: String(err),
-							});
-						}),
-				);
-			}
-		}
-		if (wakePromises.length > 0) {
-			await Promise.allSettled(wakePromises);
-		}
 	}
 
 	/** Check if any concerning messages already arrived after `since` for `memberName` (`WaitCheck` / `HasConcerning`). */
@@ -384,7 +267,7 @@ export class SwarmRuntime {
 		since: number;
 		mentionsOnly: boolean;
 	}): Promise<{ head: number; matching: SwarmBoardMessage[]; lastReadSeq: number }> {
-		const snap = await this.store.getSnapshot();
+		const snap = await SwarmHub.global().getSnapshot(this.dir);
 		if (!snap.roster) return { head: 0, matching: [], lastReadSeq: 0 };
 		const member = snap.roster.members[params.memberName];
 		const channelMap = new Map<string, SwarmChannelInfo>(snap.roster.channels.map(c => [c.name, c]));
@@ -409,14 +292,28 @@ export class SwarmRuntime {
 		};
 	}
 
-	/** Park in `swarm_wait` until a concerning board post arrives, a model switch resumes the member, or `signal` aborts. */
+	/**
+	 * Sleep / park in `swarm_wait`:
+	 * - Workers / observers inside an `AgentSession` (`parkOnSwarmWait`) atomically record wait + return `{ parked: true }`,
+	 *   terminating the current LLM turn at zero token cost (`TERMINAL_TOOL_RESULT_ABORT_REASON`) until woken by `SwarmHub`.
+	 * - Coordinator (`actor === "coordinator"`) or non-session test calls block in-memory via `SwarmHub.waitForBoardSignal`.
+	 */
 	async waitForBoard(params: {
 		session: ToolSession;
 		since: number;
 		mentionsOnly: boolean;
+		timeoutMs?: number;
 		signal?: AbortSignal;
-	}): Promise<{ text: string; interrupted?: boolean; head: number }> {
-		const snap = await this.store.getSnapshot();
+	}): Promise<{
+		text: string;
+		interrupted?: boolean;
+		head: number;
+		parked?: boolean;
+		waitSince?: number;
+		wakeMode?: SwarmWakeMode;
+	}> {
+		const hub = SwarmHub.global();
+		const snap = await hub.getSnapshot(this.dir);
 		if (!snap.roster) {
 			throw new Error("no swarm yet; add a worker to start one");
 		}
@@ -430,134 +327,103 @@ export class SwarmRuntime {
 		}
 
 		const wakeMode: SwarmWakeMode = params.mentionsOnly ? "mentions" : "anything";
-		// WaitCheck / ParkGuard: never sleep if concerning messages already landed after `since`!
-		const immediate = await this.findConcerningAfter({
-			memberName: actor,
-			since: params.since,
-			mentionsOnly: params.mentionsOnly,
-		});
-		if (immediate.matching.length > 0) {
-			const first = immediate.matching[0]!.seq;
-			const last = immediate.matching[immediate.matching.length - 1]!.seq;
-			const header =
-				first === last
-					? `Board message #${first} arrived before waiting completed; reading the board before waiting again.`
-					: `Board messages #${first}–#${last} arrived before waiting completed; reading the board before waiting again.`;
-			const view = await this.store.readView({
+		const useParkOnYield = Boolean(params.session.parkOnSwarmWait && actor !== "coordinator");
+
+		if (useParkOnYield) {
+			const res = await hub.parkMemberTurn(this.dir, {
 				memberName: actor,
 				since: params.since,
-				limit: 50,
+				mentionsOnly: params.mentionsOnly,
+				timeoutMs: params.timeoutMs,
 			});
-			const rendered = formatBoardMessagesMarkdown(view.messages);
+			if (!res.parked && res.immediate) {
+				const first = res.immediate.matching[0]!.seq;
+				const last = res.immediate.matching[res.immediate.matching.length - 1]!.seq;
+				const header =
+					first === last
+						? `Board message #${first} arrived before waiting completed; reading the board before waiting again.`
+						: `Board messages #${first}–#${last} arrived before waiting completed; reading the board before waiting again.`;
+				const view = await hub.readView(this.dir, {
+					memberName: actor,
+					since: params.since,
+					limit: 50,
+				});
+				const rendered = formatBoardMessagesMarkdown(view.messages);
+				return {
+					text: rendered ? `${header}\n\n${rendered}` : header,
+					head: view.head,
+					parked: false,
+					waitSince: params.since,
+					wakeMode,
+				};
+			}
 			return {
-				text: rendered ? `${header}\n\n${rendered}` : header,
-				head: view.head,
+				text: "Parked in swarm_wait; sleeping at zero token cost until a concerning message arrives.",
+				head: res.head,
+				parked: true,
+				waitSince: params.since,
+				wakeMode,
 			};
 		}
 
-		await this.store.recordWait(actor, params.since, wakeMode);
-
-		// Re-check once after recording wait_since to close any micro-race with concurrent postMessage.
-		const recheck = await this.findConcerningAfter({
+		const event = await hub.waitForBoardSignal(this.dir, {
 			memberName: actor,
 			since: params.since,
 			mentionsOnly: params.mentionsOnly,
+			timeoutMs: params.timeoutMs,
+			signal: params.signal,
 		});
-		if (recheck.matching.length > 0) {
-			const first = recheck.matching[0]!.seq;
-			const last = recheck.matching[recheck.matching.length - 1]!.seq;
-			const header =
-				first === last
-					? `Board message #${first} arrived before waiting completed; reading the board before waiting again.`
-					: `Board messages #${first}–#${last} arrived before waiting completed; reading the board before waiting again.`;
-			const view = await this.store.readView({
-				memberName: actor,
-				since: params.since,
-				limit: 50,
-			});
-			const rendered = formatBoardMessagesMarkdown(view.messages);
-			return {
-				text: rendered ? `${header}\n\n${rendered}` : header,
-				head: view.head,
-			};
-		}
-
-		if (params.signal?.aborted) {
-			return {
-				text: "Wait interrupted by message.",
-				interrupted: true,
-				head: recheck.head,
-			};
-		}
-
-		const { promise, resolve } = Promise.withResolvers<SwarmWakeEvent | { kind: "aborted" }>();
-		const waiter: SwarmWaiter = {
-			memberName: actor,
-			since: params.since,
-			mentionsOnly: params.mentionsOnly,
-			resolve: event => resolve(event),
-		};
-		let set = this.#waiters.get(actor);
-		if (!set) {
-			set = new Set();
-			this.#waiters.set(actor, set);
-		}
-		set.add(waiter);
-		const parkedListeners = this.#parkedListeners.get(actor);
-		if (parkedListeners) {
-			for (const notify of parkedListeners) notify();
-			parkedListeners.clear();
-		}
-
-		const onAbort = () => {
-			set?.delete(waiter);
-			resolve({ kind: "aborted" });
-		};
-		params.signal?.addEventListener("abort", onAbort, { once: true });
-
-		let event: SwarmWakeEvent | { kind: "aborted" };
-		try {
-			event = await promise;
-		} finally {
-			params.signal?.removeEventListener("abort", onAbort);
-			set.delete(waiter);
-		}
 
 		if (event.kind === "aborted") {
 			return {
 				text: "Wait interrupted by message.",
 				interrupted: true,
-				head: (await this.store.getSnapshot()).head,
+				head: event.head,
 			};
 		}
 		if (event.kind === "killed") {
 			throw new Error(`@${actor} was killed while waiting on the board`);
 		}
 		if (event.kind === "model_switch") {
-			const snapAfter = await this.store.getSnapshot();
+			return {
+				text: event.text,
+				head: event.head,
+			};
+		}
+		if (event.kind === "timeout") {
 			return {
 				text: prompt
 					.render(boardNoticeTemplate, {
-						isModelSwitch: true,
-						actorLabel: event.actorLabel,
-						selfSwitched: event.selfSwitched,
-						isCoordinator: event.isCoordinator,
-						model: event.model,
+						isTimeout: true,
+						timeoutMs: params.timeoutMs ?? 0,
+						headSeq: event.head,
+						lastReadSeq: event.lastReadSeq,
 					})
 					.trim(),
-				head: snapAfter.head,
+				head: event.head,
 			};
 		}
 
-		// Woke on concerning message: read unread messages since `params.since` and return them directly!
-		const view = await this.store.readView({
+		const view = await hub.readView(this.dir, {
 			memberName: actor,
 			since: params.since,
 			limit: 50,
 		});
+		const body = formatBoardMessagesMarkdown(view.messages);
+		if (event.immediate) {
+			const first = view.messages[0]?.seq ?? event.message.seq;
+			const last = view.messages[view.messages.length - 1]?.seq ?? event.message.seq;
+			const header =
+				first === last
+					? `Board message #${first} arrived before waiting completed; reading the board before waiting again.`
+					: `Board messages #${first}–#${last} arrived before waiting completed; reading the board before waiting again.`;
+			return {
+				text: body ? `${header}\n\n${body}` : header,
+				head: view.head,
+			};
+		}
 		const whatLabel = params.mentionsOnly ? "a message that calls on you by name, or on @all" : "any message";
 		const lead = `Waiting for ${whatLabel} posted after #${params.since} — woke on #${event.message.seq} from @${event.message.agent}.`;
-		const body = formatBoardMessagesMarkdown(view.messages);
 		return {
 			text: body ? `${lead}\n\n${body}` : lead,
 			head: view.head,
@@ -586,10 +452,7 @@ export class SwarmRuntime {
 		const available = registry.getAvailable("chat");
 		const allModels = available.length > 0 ? available : registry.getAll("chat");
 		const byId = allModels.filter(m => m.id.toLowerCase() === trimmed.toLowerCase());
-		if (byId.length === 1) {
-			return { model: byId[0]!, pattern: `${byId[0]!.provider}/${byId[0]!.id}` };
-		}
-		if (byId.length > 1) {
+		if (byId.length >= 1) {
 			return { model: byId[0]!, pattern: `${byId[0]!.provider}/${byId[0]!.id}` };
 		}
 		const byName = allModels.filter(m => m.name?.toLowerCase() === trimmed.toLowerCase());
@@ -643,6 +506,7 @@ export class SwarmRuntime {
 		channels?: readonly string[];
 		role?: SwarmRole;
 	}): Promise<{ text: string; added: string[]; seq: number; head: number }> {
+		const hub = SwarmHub.global();
 		const baseName = validateWorkerName(params.name);
 		const trimmedBrief = params.brief.trim();
 		if (!trimmedBrief) {
@@ -670,43 +534,54 @@ export class SwarmRuntime {
 			}
 		}
 
-		// Coordinator creates swarm lazily on first `add`; workers require an existing swarm.
-		let roster = (await this.store.getSnapshot()).roster;
+		let roster = (await hub.getSnapshot(this.dir)).roster;
 		const isTopLevel = (params.session.taskDepth ?? 0) === 0;
-		if (!roster) {
-			if (!isTopLevel) {
-				throw new Error("no swarm yet; only the coordinator can start one");
-			}
-			roster = await this.ensureCoordinatorSwarm(params.session);
+		const hadNoSwarmBefore = !roster;
+		if (!roster && !isTopLevel) {
+			throw new Error("no swarm yet; only the coordinator can start one");
 		}
-		promoteSwarmToolsOnSession(params.session);
 
 		const actor = this.resolveActorName(params.session, roster);
-		const actorRow = roster.members[actor];
-		if (!actorRow || actorRow.killed) {
+		const actorRow = roster?.members[actor];
+		if (roster && (!actorRow || actorRow.killed)) {
 			throw new Error(`this conversation ("${actor}") is not a live member of the swarm`);
 		}
 
-		// Validate `fork` source if requested
+		// Validate `fork` source + optional live isolated workspace cloning
 		let forkFromAgentId: string | undefined;
 		let forkFromLabel: string | undefined;
+		let forkMemberRecord: SwarmMemberRecord | undefined;
+		let isolationSourceCwd: string | undefined;
+		let forkWorkspaceWarning: string | undefined;
 		if (params.fork !== undefined && params.fork.trim() !== "") {
 			const forkName = params.fork.trim();
 			if (forkName === "coordinator") {
 				forkFromAgentId = "coordinator";
 				forkFromLabel = "coordinator";
 			} else {
-				const forkMember = roster.members[forkName];
+				const forkMember = roster?.members[forkName];
 				if (!forkMember) {
 					throw new Error(`cannot fork "${forkName}": no swarm member with that name`);
 				}
+				forkMemberRecord = forkMember;
 				forkFromAgentId = forkMember.agent_id;
 				forkFromLabel = forkMember.name;
+				const reg = params.session.agentRegistry ?? AgentRegistry.global();
+				const forkRef = reg.get(forkMember.agent_id);
+				const forkCwd = forkRef?.session?.sessionManager.getCwd();
+				if (workspace !== "inherit" && forkMember.workspace !== "inherit") {
+					if (forkCwd && (await directoryExists(forkCwd))) {
+						isolationSourceCwd = forkCwd;
+					} else {
+						forkWorkspaceWarning = `Note: could not locate @${forkMember.name}'s isolated workspace on disk; cloned from current workspace instead.`;
+					}
+				} else if (workspace === "inherit" && forkMember.workspace !== "inherit") {
+					forkWorkspaceWarning = `Note: @${forkMember.name} used workspace "${forkMember.workspace}" while this fork uses "inherit"; pass workspace:"share" or "branch" to clone its worktree edits.`;
+				}
 			}
 		}
 
-		// Resolve channels (explicit or inherited from adder)
-		const channelMap = new Map<string, SwarmChannelInfo>(roster.channels.map(c => [c.name, c]));
+		const channelMap = new Map<string, SwarmChannelInfo>((roster?.channels ?? []).map(c => [c.name, c]));
 		const isActiveChannel = (ch: string) => {
 			const info = channelMap.get(ch);
 			return Boolean(info && !info.archived);
@@ -722,14 +597,13 @@ export class SwarmRuntime {
 				if (!normalized.includes(ch)) normalized.push(ch);
 			}
 			memberChannels = normalized.length > 0 ? normalized : null;
-		} else if (actor !== "coordinator" && actorRow.channels && actorRow.channels.length > 0) {
+		} else if (actor !== "coordinator" && actorRow?.channels && actorRow.channels.length > 0) {
 			const inherited = actorRow.channels.filter(isActiveChannel);
 			memberChannels = inherited.length > 0 ? inherited : null;
 		}
 
 		const { pattern: modelPattern } = this.resolveSwarmModel(params.session, params.model);
 
-		// Build worker spawn plan (single or `<base>-1..<base>-k`)
 		const groupSize = params.tasks ? params.tasks.length : (params.n ?? 1);
 		const isGroup = groupSize > 1 || Boolean(params.tasks);
 		const planned = Array.from({ length: groupSize }, (_, idx) => {
@@ -748,7 +622,61 @@ export class SwarmRuntime {
 		if (planned.some(p => isRoleObserver(p.name, p.role)) && workspace !== "inherit") {
 			throw new Error('narrator and monitor observers must use workspace "inherit"');
 		}
+		if (roster) {
+			for (const candidate of planned) {
+				if (Object.hasOwn(roster.members, candidate.name)) {
+					throw new Error(`the swarm already has a member named "${candidate.name}"`);
+				}
+			}
+		}
 
+		// Build worker session wrapper & isolation settings upfront so preflight catches EVERY error before touching board.jsonl/members.json.
+		const effectiveSession: ToolSession =
+			workspace === "share" || workspace === "branch"
+				? {
+						...params.session,
+						settings: createSubagentSettings(params.session.settings, {
+							"task.isolation.enabled": true,
+						}),
+						suppressSpawnAdvisory: true,
+					}
+				: {
+						...params.session,
+						suppressSpawnAdvisory: true,
+					};
+		const isolation =
+			workspace === "share"
+				? ({ requested: true, merge: "patch", apply: false } as const)
+				: workspace === "branch"
+					? ({ requested: true, merge: "branch", apply: false } as const)
+					: undefined;
+
+		for (const p of planned) {
+			const bundledAgent =
+				p.role === "narrator" ? "swarm-narrator" : p.role === "monitor" ? "swarm-monitor" : "swarm-worker";
+			await resolveEffectiveSubagentPolicy({
+				session: effectiveSession,
+				invocationKind: "task",
+				agent: bundledAgent,
+				assignment: trimmedBrief,
+				model: modelPattern !== "default" ? [modelPattern] : undefined,
+				structured: false,
+				isolation,
+				forkFrom: forkFromAgentId,
+			});
+		}
+		if (forkMemberRecord && isolationSourceCwd && !forkWorkspaceWarning) {
+			logger.debug("Swarm fork cloning live isolated workspace", {
+				from: forkMemberRecord.name,
+				cwd: isolationSourceCwd,
+			});
+		}
+
+		if (!roster) {
+			roster = await this.ensureCoordinatorSwarm(params.session);
+		}
+		await promoteSwarmToolsOnSession(params.session);
+		const liveActorRow = roster.members[actor]!;
 		const homeChannel = homeChannelIn(memberChannels, isActiveChannel);
 		const targetLabel = isGroup ? baseName : planned[0]!.name;
 		let publicBriefText = `@${targetLabel} ${trimmedBrief}`;
@@ -757,13 +685,11 @@ export class SwarmRuntime {
 			publicBriefText += `\n\nAssigned slices:\n${sliceLines}`;
 		}
 
-		const parentPrefix = actor === "coordinator" ? undefined : (params.session.getAgentId?.() ?? actorRow.agent_id);
+		const parentPrefix =
+			actor === "coordinator" ? undefined : (params.session.getAgentId?.() ?? liveActorRow.agent_id);
 
 		const newRows: Array<Omit<SwarmMemberRecord, "last_read_seq" | "wait_since" | "updated_at">> = planned.map(p => {
-			// Top-level spawns get `id = p.name`; nested spawns under a worker get `${parentPrefix}.${p.name}` in AgentRegistry.
 			const expectedAgentId = parentPrefix ? `${parentPrefix}.${p.name}` : p.name;
-			this.#agentIdToMember.set(expectedAgentId, p.name);
-			this.#agentIdToMember.set(p.name, p.name);
 			return {
 				name: p.name,
 				agent_id: expectedAgentId,
@@ -778,24 +704,15 @@ export class SwarmRuntime {
 			};
 		});
 
-		const { briefMessage, roster: updatedRoster } = await this.store.addMembersWithBrief({
+		const senderAgentId = params.session.getAgentId?.() ?? liveActorRow.agent_id;
+		const { briefMessage } = await hub.addMembersWithBrief(this.dir, {
 			actor,
+			senderAgentId,
 			briefText: publicBriefText,
 			briefChannel: homeChannel,
 			newMembers: newRows,
 		});
 
-		// Wake existing observers (e.g. narrator) without re-notifying the brand-new workers
-		const rosterWithoutNew: SwarmRosterFile = {
-			...updatedRoster,
-			members: Object.fromEntries(
-				Object.entries(updatedRoster.members).filter(([k]) => !planned.some(p => p.name === k)),
-			),
-		};
-		const senderAgentId = params.session.getAgentId?.() ?? actorRow.agent_id;
-		await this.ring(briefMessage, rosterWithoutNew, senderAgentId, params.session.agentRegistry);
-
-		// Launch each worker asynchronously via `runStructuredSubagent`
 		for (const p of planned) {
 			const bundledAgent =
 				p.role === "narrator" ? "swarm-narrator" : p.role === "monitor" ? "swarm-monitor" : "swarm-worker";
@@ -816,20 +733,20 @@ export class SwarmRuntime {
 							? memberChannels.map(c => `#${c}`).join(", ")
 							: undefined,
 					homeChannel,
-					swarmDir: p.role === "narrator" ? this.store.dir : undefined,
+					swarmDir: p.role === "narrator" ? this.dir : undefined,
 				})
 				.trim();
 
 			this.#launchBackgroundWorker({
-				parentSession: params.session,
+				effectiveSession,
 				memberName: p.name,
 				expectedAgentId: parentPrefix ? `${parentPrefix}.${p.name}` : p.name,
 				bundledAgent,
 				assignment,
 				modelPattern,
-				workspace,
+				isolation,
+				isolationSourceCwd,
 				forkFrom: forkFromAgentId,
-				channels: memberChannels ?? undefined,
 			});
 		}
 
@@ -848,10 +765,13 @@ export class SwarmRuntime {
 		const helperNote =
 			actor !== "coordinator"
 				? ` You added it, so its results are yours to integrate: ensure it reports back to @${actor} by name, and kill it once its work is done and integrated.`
-				: ` SWARM_DIR=${this.store.dir} (run \`/swarm board\` at any time to view the live board).`;
+				: hadNoSwarmBefore
+					? ` SWARM_DIR=${this.dir} (run \`/swarm board\` at any time to view the live board).`
+					: ` SWARM_DIR=${this.dir}.`;
+		const warningNote = forkWorkspaceWarning ? ` ${forkWorkspaceWarning}` : "";
 
 		return {
-			text: `${spawnedLabel} ${boardLoc}${wsNote}${helperNote}`,
+			text: `${spawnedLabel} ${boardLoc}${wsNote}${helperNote}${warningNote}`,
 			added: planned.map(p => p.name),
 			seq: briefMessage.seq,
 			head: briefMessage.seq,
@@ -859,15 +779,15 @@ export class SwarmRuntime {
 	}
 
 	#launchBackgroundWorker(options: {
-		parentSession: ToolSession;
+		effectiveSession: ToolSession;
 		memberName: string;
 		expectedAgentId: string;
 		bundledAgent: string;
 		assignment: string;
 		modelPattern: string;
-		workspace: SwarmWorkspaceMode;
+		isolation?: { requested: true; merge: "patch" | "branch"; apply: false };
+		isolationSourceCwd?: string;
 		forkFrom?: string;
-		channels?: string[];
 	}): void {
 		const abortController = new AbortController();
 		const runRecord: ActiveWorkerRun = {
@@ -878,31 +798,11 @@ export class SwarmRuntime {
 		};
 		this.#activeRuns.set(options.memberName, runRecord);
 
-		const effectiveSession: ToolSession =
-			options.workspace === "share" || options.workspace === "branch"
-				? {
-						...options.parentSession,
-						settings: createSubagentSettings(options.parentSession.settings, {
-							"task.isolation.enabled": true,
-						}),
-						suppressSpawnAdvisory: true,
-					}
-				: {
-						...options.parentSession,
-						suppressSpawnAdvisory: true,
-					};
-
-		const isolation =
-			options.workspace === "share"
-				? ({ requested: true, merge: "patch", apply: false } as const)
-				: options.workspace === "branch"
-					? ({ requested: true, merge: "branch", apply: false } as const)
-					: undefined;
-
+		const hub = SwarmHub.global();
 		void (async () => {
 			try {
 				const outcome = await runStructuredSubagent({
-					session: effectiveSession,
+					session: options.effectiveSession,
 					invocationKind: "task",
 					agent: options.bundledAgent,
 					assignment: options.assignment,
@@ -915,16 +815,17 @@ export class SwarmRuntime {
 						id: options.memberName,
 						label: options.memberName,
 					},
-					isolation,
+					isolation: options.isolation,
+					isolationSourceCwd: options.isolationSourceCwd,
 					forkFrom: options.forkFrom,
-					channels: options.channels,
+					swarmContext: { swarmDir: this.dir, memberName: options.memberName },
 					signal: abortController.signal,
 				});
 				const actualId = outcome.result.id;
 				if (actualId && actualId !== options.expectedAgentId) {
-					this.#agentIdToMember.set(actualId, options.memberName);
+					hub.registerAgentBinding(this.dir, actualId, options.memberName);
 					runRecord.agentId = actualId;
-					await this.store.updateMemberFields(options.memberName, { agent_id: actualId });
+					await hub.updateMemberFields(this.dir, options.memberName, { agent_id: actualId });
 				}
 				const wsNote = outcome.result.branchName
 					? `branch:${outcome.result.branchName}`
@@ -933,25 +834,20 @@ export class SwarmRuntime {
 						: undefined;
 				if (outcome.result.exitCode !== 0 && !outcome.result.aborted) {
 					const errText = outcome.result.error || outcome.result.stderr || "worker turn failed";
-					await this.store.updateMemberFields(options.memberName, {
-						last_error: errText.slice(0, 300),
-						quota_exhausted: QUOTA_ERROR_RE.test(errText),
-						...(wsNote ? { workspace_note: wsNote } : {}),
-					});
+					await hub.reportMemberTurnError(this.dir, options.memberName, errText, isSwarmQuotaError(errText));
+					if (wsNote) {
+						await hub.updateMemberFields(this.dir, options.memberName, { workspace_note: wsNote });
+					}
 				} else {
-					await this.store.updateMemberFields(options.memberName, {
-						last_error: undefined,
-						quota_exhausted: false,
-						...(wsNote ? { workspace_note: wsNote } : {}),
-					});
+					await hub.clearMemberError(this.dir, options.memberName);
+					if (wsNote) {
+						await hub.updateMemberFields(this.dir, options.memberName, { workspace_note: wsNote });
+					}
 				}
 			} catch (err) {
 				if (!abortController.signal.aborted) {
 					const msg = err instanceof Error ? err.message : String(err);
-					await this.store.updateMemberFields(options.memberName, {
-						last_error: msg.slice(0, 300),
-						quota_exhausted: QUOTA_ERROR_RE.test(msg),
-					});
+					await hub.reportMemberTurnError(this.dir, options.memberName, msg, isSwarmQuotaError(msg));
 				}
 			} finally {
 				runRecord.running = false;
@@ -966,11 +862,11 @@ export class SwarmRuntime {
 		if (target === "coordinator") {
 			throw new Error("@coordinator is the coordinator and cannot be killed");
 		}
-		const snap = await this.store.getSnapshot();
+		const hub = SwarmHub.global();
+		const snap = await hub.getSnapshot(this.dir);
 		if (!snap.roster) throw new Error("no swarm yet; add a worker to start one");
 		const actor = this.resolveActorName(params.session, snap.roster);
 
-		// Match exact member OR numbered group `<target>-1..<target>-k`
 		const exact = snap.roster.members[target];
 		const groupMatches = exact
 			? [exact]
@@ -997,16 +893,12 @@ export class SwarmRuntime {
 			return { text: `@${target} is already killed.`, killed: [] };
 		}
 
-		await this.store.markKilled(toKill);
+		await hub.markKilled(this.dir, toKill);
 		const lifecycle = params.session.agentLifecycle?.() ?? AgentLifecycleManager.global();
 		const reg = params.session.agentRegistry ?? AgentRegistry.global();
 
 		for (const m of groupMatches) {
-			const waiters = this.#waiters.get(m.name);
-			if (waiters) {
-				for (const w of waiters) w.resolve({ kind: "killed" });
-				waiters.clear();
-			}
+			hub.notifyKilled(this.dir, m.name);
 			const run = this.#activeRuns.get(m.name);
 			if (run) {
 				run.abortController.abort("killed by swarm");
@@ -1030,8 +922,9 @@ export class SwarmRuntime {
 		session: ToolSession;
 		name?: string;
 		model?: string;
-	}): Promise<{ text: string; target: string; model: string }> {
-		const snap = await this.store.getSnapshot();
+	}): Promise<{ text: string; target: string; model: string; selfSwitch: boolean }> {
+		const hub = SwarmHub.global();
+		const snap = await hub.getSnapshot(this.dir);
 		if (!snap.roster) throw new Error("no swarm yet; add a worker to start one");
 		const actor = this.resolveActorName(params.session, snap.roster);
 		const targetName = params.name?.trim() || actor;
@@ -1052,68 +945,61 @@ export class SwarmRuntime {
 			);
 		}
 
-		const reg = params.session.agentRegistry ?? AgentRegistry.global();
 		if (!isSelf) {
-			const currentStatus = this.memberStatusOf(targetRow, reg);
+			const currentStatus = this.memberStatusOf(targetRow);
 			if (currentStatus === "working") {
 				throw new Error(`worker "${targetName}" is mid-turn; switch its model once status shows it waiting`);
 			}
 		}
 
 		const { model: resolvedModel, pattern } = this.resolveSwarmModel(params.session, params.model);
-		const targetRef = reg.get(targetRow.agent_id);
-		if (targetRef?.session && resolvedModel && isLocalAgentSession(targetRef.session)) {
+		const reg = params.session.agentRegistry ?? AgentRegistry.global();
+		const lifecycle = params.session.agentLifecycle?.() ?? AgentLifecycleManager.global();
+
+		if (isSelf && params.session.scheduleSwarmSelfModelSwitch && resolvedModel) {
+			params.session.scheduleSwarmSelfModelSwitch({
+				swarmDir: this.dir,
+				memberName: actor,
+				agentId: targetRow.agent_id,
+				model: resolvedModel,
+				modelLabel: pattern,
+			});
+			return {
+				text: `Switching your model to \`${pattern}\` and continuing once this turn settles.`,
+				target: targetName,
+				model: pattern,
+				selfSwitch: true,
+			};
+		}
+
+		let targetRef = reg.get(targetRow.agent_id);
+		if (targetRef && !targetRef.session && targetRef.status === "parked") {
+			await lifecycle.ensureLive(targetRow.agent_id);
+			targetRef = reg.get(targetRow.agent_id);
+		}
+		if (targetRef?.session && resolvedModel && typeof targetRef.session.setModel === "function") {
 			await targetRef.session.setModel(resolvedModel);
 		}
 
-		await this.store.updateMemberFields(targetName, {
-			model: pattern,
-			quota_exhausted: false,
-			last_error: undefined,
+		await hub.notifyModelSwitched(this.dir, {
+			memberName: targetName,
+			targetAgentId: targetRow.agent_id,
+			actor,
+			selfSwitch: isSelf,
+			modelLabel: pattern,
 		});
-
-		const actorLabel = actor === "coordinator" ? "The coordinator" : `@${actor}`;
-		const waiters = this.#waiters.get(targetName);
-		if (waiters && waiters.size > 0) {
-			for (const w of waiters) {
-				w.resolve({
-					kind: "model_switch",
-					actorLabel,
-					selfSwitched: isSelf,
-					isCoordinator: targetName === "coordinator",
-					model: pattern,
-				});
-			}
-			waiters.clear();
-		} else if (!isSelf && targetRef) {
-			const notice = prompt
-				.render(boardNoticeTemplate, {
-					isModelSwitch: true,
-					actorLabel,
-					selfSwitched: false,
-					isCoordinator: targetName === "coordinator",
-					model: pattern,
-				})
-				.trim();
-			await IrcBus.global()
-				.send({
-					from: params.session.getAgentId?.() ?? MAIN_AGENT_ID,
-					to: targetRow.agent_id,
-					body: notice,
-				})
-				.catch(() => {});
-		}
 
 		return {
 			text: isSelf ? `Switched your model to \`${pattern}\`.` : `Switched worker @${targetName} to \`${pattern}\`.`,
 			target: targetName,
 			model: pattern,
+			selfSwitch: isSelf,
 		};
 	}
 
 	/** Render `swarm{action:"status"}` markdown. */
 	async formatStatusMarkdown(registry?: AgentRegistryApi): Promise<string> {
-		const snap = await this.store.getSnapshot();
+		const snap = await SwarmHub.global().getSnapshot(this.dir);
 		if (!snap.roster) {
 			return '{"status":"no swarm yet; add a worker to start one"}';
 		}
@@ -1127,7 +1013,7 @@ export class SwarmRuntime {
 		const members = Object.values(snap.roster.members);
 		const lines: string[] = [];
 		const titlePart = snap.roster.title ? ` — ${snap.roster.title}` : "";
-		lines.push(`### Swarm Status${titlePart} (board head: #${snap.head}, dir: \`${this.store.dir}\`)`);
+		lines.push(`### Swarm Status${titlePart} (board head: #${snap.head}, dir: \`${this.dir}\`)`);
 		lines.push("");
 
 		let taskAgents = 0;
@@ -1136,7 +1022,7 @@ export class SwarmRuntime {
 		let stoppedCount = 0;
 
 		for (const m of members) {
-			const status = this.memberStatusOf(m, reg);
+			const status = this.memberStatusOf(m);
 			const observer = isRoleObserver(m.name, m.role);
 			if (m.name !== "coordinator" && !observer && !m.killed) {
 				taskAgents += 1;
@@ -1181,12 +1067,11 @@ export class SwarmRuntime {
 	}
 
 	/** Render `read_board{status: true}` monitor table (`| member | state | parked on | last post |`). */
-	async formatMonitorStatusTable(registry?: AgentRegistryApi): Promise<string> {
-		const snap = await this.store.getSnapshot();
+	async formatMonitorStatusTable(): Promise<string> {
+		const snap = await SwarmHub.global().getSnapshot(this.dir);
 		if (!snap.roster) {
 			return "No swarm yet.";
 		}
-		const reg = registry ?? AgentRegistry.global();
 		const lines = [
 			`Swarm status (board #${snap.head}):`,
 			"",
@@ -1194,7 +1079,7 @@ export class SwarmRuntime {
 			"|---|---|---|---|",
 		];
 		for (const m of Object.values(snap.roster.members)) {
-			const state = this.memberStatusOf(m, reg);
+			const state = this.memberStatusOf(m);
 			const parkedOn =
 				state === "waiting" || state === "stopped"
 					? `${m.wake_mode === "anything" ? "any message" : "@mentions"} after #${m.wait_since} (read #${m.last_read_seq})`
@@ -1212,13 +1097,14 @@ export class SwarmRuntime {
 		overviewOnly?: boolean;
 		registry?: AgentRegistryApi;
 	}): Promise<string> {
-		const snap = await this.store.getSnapshot();
+		const hub = SwarmHub.global();
+		const snap = await hub.getSnapshot(this.dir);
 		if (!snap.roster) {
 			return "No swarm in this conversation. Start one with `/swarm <task>`.";
 		}
 		const reg = options?.registry ?? AgentRegistry.global();
-		const rosterNames = new Set(Object.keys(snap.roster.members));
-		const overview: SwarmOverviewView | null = await this.store.readNarratorOverview(snap.head, rosterNames);
+		const rosterNames = Object.keys(snap.roster.members);
+		const overview: SwarmOverviewView | null = await hub.readNarratorOverview(this.dir, snap.head, rosterNames);
 
 		const title = snap.roster.title || snap.roster.swarm_id;
 		const memberList = Object.values(snap.roster.members);
@@ -1269,7 +1155,7 @@ export class SwarmRuntime {
 
 		sections.push(await this.formatStatusMarkdown(reg));
 
-		const view = await this.store.readView({
+		const view = await hub.readView(this.dir, {
 			memberName: "coordinator",
 			channel: options?.channel || SWARM_ALL_CHANNELS,
 			limit: options?.limit ?? 25,

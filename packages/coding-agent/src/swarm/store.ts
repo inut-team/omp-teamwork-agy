@@ -592,7 +592,10 @@ export class SwarmBoardStore {
 	async updateMemberFields(
 		memberName: string,
 		patch: Partial<
-			Pick<SwarmMemberRecord, "model" | "last_error" | "quota_exhausted" | "workspace_note" | "agent_id">
+			Pick<
+				SwarmMemberRecord,
+				"model" | "last_error" | "quota_exhausted" | "sit_out_until_seq" | "workspace_note" | "agent_id"
+			>
 		>,
 	): Promise<SwarmMemberRecord | null> {
 		return this.#withLock(async () => {

@@ -204,8 +204,9 @@ import {
 	type EffectiveSettingsScope,
 	loadEffectiveAuthAccountPolicyConfig,
 } from "./session/auth-broker-config";
-import type { AuthStorage } from "./session/auth-storage";
+import type { SwarmContext } from "./swarm/types";
 import { CostCapError, type CostGateApi, guardStreamFn } from "./session/cost-gate";
+import type { AuthStorage } from "./session/auth-storage";
 import {
 	CREDENTIAL_DISABLED_NOTICE_SOURCE,
 	formatCredentialDisabledNotice,
@@ -952,7 +953,8 @@ export interface CreateAgentSessionOptions {
 	 * top-level "Main" session, which has no parent.
 	 */
 	parentAgentId?: string;
-
+	/** Swarm identity passed to worker/member sessions across threads and revivals. */
+	swarmContext?: SwarmContext;
 	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
 
@@ -2772,6 +2774,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getTelemetry: () => agent?.telemetry,
 			// Tools and nested subagents use this root's manager, never another root's singleton.
 			asyncJobManager: scopedAsyncJobManager,
+			swarmContext: options.swarmContext,
+			setSwarmContext: ctx => {
+				toolSession.swarmContext = ctx;
+				session?.setSwarmContext(ctx);
+			},
+			parkOnSwarmWait: true,
+			advanceSwarmHeadWatermark: head => session?.advanceSwarmHeadWatermark(head),
+			promoteSwarmTools: async () => {
+				await session?.promoteSwarmTools();
+			},
+			scheduleSwarmSelfModelSwitch: req => session?.scheduleSwarmSelfModelSwitch(req),
 		};
 		// The Spotlight experiment starts before the first prompt build: its shaping rule rides the system prompt
 		// and its shaping replaces the native read summarizer / bash minimizer for the session.
@@ -5320,6 +5333,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 			autoTitle: options.autoTitle === true && !isSubagentSession,
+			swarmContext: options.swarmContext,
 		});
 		hasSession = true;
 		// The session now owns its cost gate; the interactive TUI starts compression after its first frame.

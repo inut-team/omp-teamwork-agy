@@ -21,6 +21,7 @@ import { parseSlashCommand, parseSubcommand } from "../slash-commands/helpers/pa
 import type { SlashCommandRuntime } from "../slash-commands/types";
 import { SPOTLIGHT_NOTICE_SOURCE } from "../spotlight/session";
 import { reconnectMcpManagerServer } from "../mcp/oauth-reauth";
+import { resolveSwarmDirFromContext, SwarmHub } from "../swarm";
 import {
 	formatPersistenceDurabilityFailure,
 	formatPersistenceFailure,
@@ -523,7 +524,15 @@ async function runPrintModeCore(
 	// races it; reaching it cancels the jobs and any pending retry (dispose below)
 	// and fails the run.
 	let asyncWaitExpired = false;
-	if (admittedAgentTurn && !strictMCPFailure && cfgAsyncPrintWake.get(session.settings)) {
+	const printSwarmDir = resolveSwarmDirFromContext({
+		cwd: session.sessionManager.getCwd(),
+		artifactsDir: session.sessionManager.getArtifactsDir(),
+		sessionFile: session.sessionManager.getSessionFile(),
+		sessionId: session.sessionManager.getSessionId(),
+	});
+	const swarmActiveAtEnd =
+		admittedAgentTurn && !strictMCPFailure && (await SwarmHub.global().hasActiveSwarmMembers(printSwarmDir));
+	if (admittedAgentTurn && !strictMCPFailure && (cfgAsyncPrintWake.get(session.settings) || swarmActiveAtEnd)) {
 		const { deadline } = options;
 		const deadlineReached = Promise.withResolvers<true>();
 		// setTimeout overflows past 2^31-1 ms and fires in ~1 ms (#12375), and `--max-time 600h`
@@ -537,25 +546,35 @@ async function runPrintModeCore(
 		};
 		armDeadline();
 		// Dispose cancels the jobs and retry recovery; an abandoned wait then resolves or rejects unobserved.
-		const expires = async (work: Promise<void>): Promise<boolean> => {
+		const expires = async (work: Promise<unknown>): Promise<boolean> => {
 			if (!(await Promise.race([work.then(() => false), deadlineReached.promise]))) return false;
 			work.catch(() => {});
 			return true;
 		};
 		try {
-			// Without owned jobs a late primary turn is not this wait's business: it keeps its own exit path.
-			asyncWaitExpired = (await expires(session.waitForIdle())) && session.hasPendingAsyncWork();
-			while (!asyncWaitExpired && session.hasPendingAsyncWork() && !session.isDisposed && !signalTeardownActive()) {
-				// Checked synchronously too: an already-due timer fires only in the timers
-				// phase, after a settle of finished work would have resolved. The deadline
-				// stops new waits; a settle that already finished is kept: its follow-up turn
-				// ran under the agent-loop deadline (which aborts a turn that crosses it), so
-				// its answer is complete.
+			const asyncWaitEnabled = cfgAsyncPrintWake.get(session.settings);
+			// Wait while either owned async jobs (--wait-async) or active swarm workers are running.
+			asyncWaitExpired =
+				(await expires(session.waitForIdle())) &&
+				((asyncWaitEnabled && session.hasPendingAsyncWork()) ||
+					(await SwarmHub.global().hasActiveSwarmMembers(printSwarmDir)));
+			while (!asyncWaitExpired && !session.isDisposed && !signalTeardownActive()) {
+				const pendingAsync = asyncWaitEnabled && session.hasPendingAsyncWork();
+				const activeSwarm = await SwarmHub.global().hasActiveSwarmMembers(printSwarmDir);
+				if (!pendingAsync && !activeSwarm && !session.isStreaming) {
+					break;
+				}
 				if (deadline !== undefined && Date.now() >= deadline) {
 					asyncWaitExpired = true;
 					break;
 				}
-				asyncWaitExpired = await expires(session.settleAsyncWork());
+				if (pendingAsync) {
+					asyncWaitExpired = await expires(session.settleAsyncWork());
+				} else if (session.isStreaming) {
+					asyncWaitExpired = await expires(session.waitForIdle());
+				} else {
+					asyncWaitExpired = await expires(Bun.sleep(100));
+				}
 			}
 		} finally {
 			clearTimeout(deadlineTimer);
@@ -564,7 +583,6 @@ async function runPrintModeCore(
 			writeStderrLine("Error: --max-time reached before background work settled; any running jobs were cancelled.");
 		}
 	}
-
 	// From this point onward a late blocker must be recorded without starting a
 	// primary turn whose response print mode would never emit.
 	session.prepareForHeadlessAdvisorDrain();

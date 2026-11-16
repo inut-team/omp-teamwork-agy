@@ -23,8 +23,6 @@ Run one agent synchronously.
 
 {{asyncGuidance}}
 {{/if}}
-
-
 # Inputs
 - `agent`: most specific{{#if batchEnabled}}, inside each `tasks[]` item, NEVER at the top level{{/if}}.
   - Omit only for the default (`{{defaultAgent}}`); NEVER name it.

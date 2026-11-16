@@ -239,6 +239,11 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		abort: (_bridge, session, options) => session.abort(options),
 		dispose: (_bridge, session, options) => session.dispose(options),
 		deliverIrcMessage: (_bridge, session, msg) => session.deliverIrcMessage(msg),
+		deliverSwarmWake: (_bridge, session, notice) => session.deliverSwarmWake?.(notice) ?? Promise.resolve(),
+		setModel: (_bridge, session, model, role, options) =>
+			session.setModel ? session.setModel(model, role, options) : Promise.resolve({ switched: false }),
+		ensureSessionOnDisk: (_bridge, session) => session.ensureSessionOnDisk?.() ?? Promise.resolve(),
+		flushSessionTranscript: (_bridge, session) => session.flushSessionTranscript?.() ?? Promise.resolve(),
 		waitForIrcReplies: (_bridge, session) => session.waitForIrcReplies(),
 		setWorkPoolYieldItems: (_bridge, session, items) => session.setWorkPoolYieldItems(items),
 		emitIrcRelayObservation: (_bridge, session, record) => session.emitIrcRelayObservation(record),

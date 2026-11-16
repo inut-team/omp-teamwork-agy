@@ -44,6 +44,7 @@ import type { SkillDescriptionCatalog } from "../extensibility/skill-description
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { SwarmContext } from "../swarm/types";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { JobWidgetView } from "@oh-my-pi/pi-tui/tools/job-widget";
 import type { SystemPromptSources } from "@oh-my-pi/pi-tui/status-line/context-usage";
@@ -430,6 +431,8 @@ export interface AgentSessionConfig {
 	 * RPC, ACP, SDK and subagent sessions stay unnamed. Default: false.
 	 */
 	autoTitle?: boolean;
+	/** Swarm identity when running as a swarm member (worker, narrator, monitor, or coordinator). */
+	swarmContext?: SwarmContext;
 }
 
 /** Options for AgentSession.prompt(). */

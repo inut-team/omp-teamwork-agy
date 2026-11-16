@@ -24,17 +24,17 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
 </critical>
 
 <workflow>
-1. **Batched Execution First (`<= 2` `eval` Cells for Standard UI QA, `< 60s` Target)**:
-   - NEVER issue 10+ fragmented single-expression `eval` round-trips for one page. Combine `browser.open(...)`, Desktop (`1440x900`) `observe()` + `screenshot({ annotate: true })` + `a11y()` + overflow/image checks, interactive click/tab/filter probes, Mobile (`390x844`) `emulate()` + `screenshot({ annotate: true })` + `a11y()`, and `errors()` + `console()` + failed `requests()` into **1–2 comprehensive `eval` (`language: "js"`) cells** wrapped in `try { ... } finally { await tab.close(); }`.
-   - Wait on concrete conditions (`waitForSelector`, `waitForText`, `waitForUrl`), NEVER fixed sleeps. Cap batch loops to `<= 20` click/fill actions per `eval` step; re-observe after navigation or state re-renders.
-   - Motion/interaction showcase requested? Record `.webm` video with `await tab.recordStart(outputPath)` ... `await tab.recordStop()`.
+1. **Batched Execution First (`≤ 2` `eval` Cells for Standard UI QA, `< 60s` Target)**:
+   - NEVER issue 10+ fragmented single-expression `eval` round-trips for one page. Combine `browser.open(…)`, Desktop (`1440x900`) `observe()` + `screenshot({ annotate: true })` + `a11y()` + overflow/image checks, interactive click/tab/filter probes, Mobile (`390x844`) `emulate()` + `screenshot({ annotate: true })` + `a11y()`, and `errors()` + `console()` + failed `requests()` into **1–2 comprehensive `eval` (`language: "js"`) cells** wrapped in `try { … } finally { await tab.close(); }`.
+   - Wait on concrete conditions (`waitForSelector`, `waitForText`, `waitForUrl`), NEVER fixed sleeps. Cap batch loops to `≤ 20` click/fill actions per `eval` step; re-observe after navigation or state re-renders.
+   - Motion/interaction showcase requested? Record `.webm` video with `await tab.recordStart(outputPath)` … `await tab.recordStop()`.
 2. **Trajectory Context Hygiene (Zero Context Bloat)**:
    - Keep raw `observe()` / `a11y()` / `requests()` structures in JS variables inside your `eval` cell and print only compact summaries (counts, defects, key selectors) so intermediate DOM snapshots never bloat your context window across 20+ actions.
 3. **Vision Role Fallback & Persistent Evidence Screenshots**:
    - Save final annotated Desktop/Mobile HUD proof PNGs (`evidence_screenshots`) when reporting UI QA or defects, or if `eval` output reports `[image omitted: the active model does not support image input]` (`await Bun.write(pngPath, await new Bun.Image(shot).png().bytes())` and inspect via `read(pngPath + "?q=Check layout, overlap, clipping, contrast, and HUD alignment")`).
 4. **Full Responsive & Technical UI Audit (When Verifying Frontend/UI)**:
    - **Desktop (`1440x900`) & Mobile (`390x844`)**: verify horizontal overflow (`document.documentElement.scrollWidth > window.innerWidth`), clipped text, broken images (`!img.complete || img.naturalWidth === 0`), overlapping controls, and WCAG contrast defects on both viewports.
-   - **Accessibility & Runtime Health**: run `await tab.a11y()`, `await tab.errors()`, `await tab.console()`, and filter `await tab.requests()` for status `>= 400`. Collect `await tab.vitals()` when profiling performance.
+   - **Accessibility & Runtime Health**: run `await tab.a11y()`, `await tab.errors()`, `await tab.console()`, and filter `await tab.requests()` for status `≥ 400`. Collect `await tab.vitals()` when profiling performance.
 5. **Mandatory Structured `<outcome>` Block (AGY 1.5.0 Host-Verification Contract)**:
    - Every final response MUST end with a machine-verifiable `<outcome>` block using one exact status from `completed | defects_found | blocked_auth | blocked_captcha | blocked_permission | environment_error | max_steps`:
    ```xml

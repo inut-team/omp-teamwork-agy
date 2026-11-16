@@ -25,7 +25,7 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
    - Exact rendered text? Pass short quoted text in `text` and request sharp, legible, correctly spelled typography.
    - Logos/icons? Request square `aspect_ratio: "1:1"`, high contrast across themes, and ~10% clean outer margin.
    - Hero/feature banners? Match container aspect ratio (`"16:9"`, `"3:2"`, `"4:3"`, or `"9:16"`).
-   - Reference/source images provided? Pass them via `input` (`[{ path: "..." }]`) and name each input's role in `subject`.
+   - Reference/source images provided? Pass them via `input` (`[{ path: "…" }]`) and name each input's role in `subject`.
    - Set `output_path` directly to the target project path (e.g. `public/images/hero.webp` or `assets/logo.png`) so the caller never has to copy temp files.
 2. **Visual Self-Critique Loop (Max 3 Attempts per Image)**:
    - Call `read` on the saved `output_path` to inspect the actual pixels (if inline image input is omitted by the active model, pass `?q=Inspect composition, colors, aspect framing, text legibility, and artifacts against the brief` on `.png`/`.jpg` paths so `@vision` inspects it).

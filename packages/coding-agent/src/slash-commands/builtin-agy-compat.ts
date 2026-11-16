@@ -348,8 +348,13 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 		handle: async (command, runtime) => {
 			const sub = parseSwarmBoardSubcommand(command.args);
 			if (sub) {
-				const cwd = runtime?.cwd ?? process.cwd();
-				const swarmDir = resolveSwarmDirFromContext({ cwd });
+				const sessionManager = runtime?.sessionManager;
+				const swarmDir = resolveSwarmDirFromContext({
+					cwd: sessionManager?.getCwd?.() ?? runtime?.cwd ?? process.cwd(),
+					artifactsDir: sessionManager?.getArtifactsDir?.() ?? null,
+					sessionFile: sessionManager?.getSessionFile?.() ?? null,
+					sessionId: sessionManager?.getSessionId?.() ?? null,
+				});
 				const swarmRuntime = SwarmRuntime.forDir(swarmDir);
 				const formatted =
 					sub.mode === "status"
@@ -360,22 +365,43 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 							});
 				if (runtime && typeof runtime.output === "function") {
 					await runtime.output(formatted);
+					return { consumed: true };
 				}
 				return { prompt: formatted };
+			}
+			const session = runtime?.session;
+			if (
+				session &&
+				typeof session.getActiveToolNames === "function" &&
+				typeof session.setActiveToolsByName === "function"
+			) {
+				const existing = session.getActiveToolNames();
+				const merged = [...new Set([...existing, ...SWARM_TOOL_NAMES])];
+				await session.setActiveToolsByName(merged);
+			}
+			const sessionManager = runtime?.sessionManager;
+			if (session && "setSwarmContext" in session && typeof session.setSwarmContext === "function") {
+				const swarmDir = resolveSwarmDirFromContext({
+					cwd: sessionManager?.getCwd?.() ?? runtime?.cwd ?? process.cwd(),
+					artifactsDir: sessionManager?.getArtifactsDir?.() ?? null,
+					sessionFile: sessionManager?.getSessionFile?.() ?? null,
+					sessionId: sessionManager?.getSessionId?.() ?? null,
+				});
+				session.setSwarmContext({ swarmDir, memberName: "coordinator" });
 			}
 			return { prompt: buildSwarmCoordinatorPrompt(command.args) };
 		},
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
 			const sub = parseSwarmBoardSubcommand(command.args);
+			const sessionManager = runtime.ctx.sessionManager;
+			const swarmDir = resolveSwarmDirFromContext({
+				cwd: sessionManager?.getCwd?.() ?? process.cwd(),
+				artifactsDir: sessionManager?.getArtifactsDir?.() ?? null,
+				sessionFile: sessionManager?.getSessionFile?.() ?? null,
+				sessionId: sessionManager?.getSessionId?.() ?? null,
+			});
 			if (sub) {
-				const sessionManager = runtime.ctx.sessionManager;
-				const swarmDir = resolveSwarmDirFromContext({
-					cwd: sessionManager?.getCwd?.() ?? process.cwd(),
-					artifactsDir: sessionManager?.getArtifactsDir?.() ?? null,
-					sessionFile: sessionManager?.getSessionFile?.() ?? null,
-					sessionId: sessionManager?.getSessionId?.() ?? null,
-				});
 				const swarmRuntime = SwarmRuntime.forDir(swarmDir);
 				const formatted =
 					sub.mode === "status"
@@ -400,6 +426,9 @@ export const BUILTIN_AGY_COMPAT_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> 
 				const merged = [...new Set([...existing, ...SWARM_TOOL_NAMES])];
 				await session.setActiveToolsByName(merged);
 			}
+			if (session && "setSwarmContext" in session && typeof session.setSwarmContext === "function") {
+				session.setSwarmContext({ swarmDir, memberName: "coordinator" });
+			}
 			return { prompt: buildSwarmCoordinatorPrompt(command.args) };
 		},
 	},
@@ -423,6 +452,17 @@ export function isBrowserTaskArg(args: string): boolean {
 		return false;
 	}
 	return BROWSER_TASK_ARG_PATTERN.test(trimmed);
+}
+/** True when raw slash text starts a coordinator `/swarm` run (excluding read-only subcommands like `/swarm board`). */
+export function isSwarmCoordinatorStartCommand(text: string): boolean {
+	const trimmed = text.trimStart();
+	if (!trimmed.startsWith("/")) return false;
+	const body = trimmed.slice(1);
+	const firstWs = body.search(/\s/);
+	const name = (firstWs === -1 ? body : body.slice(0, firstWs)).toLowerCase();
+	if (name !== "swarm" && name !== "native-swarm") return false;
+	const args = firstWs === -1 ? "" : body.slice(firstWs + 1).trim();
+	return parseSwarmBoardSubcommand(args) === null;
 }
 /**
  * Expand a leading AGY-compat slash command (such as `/grill-me`, `/boost`,

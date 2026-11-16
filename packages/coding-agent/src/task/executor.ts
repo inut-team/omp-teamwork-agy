@@ -145,6 +145,8 @@ import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "./types";
+import { isSwarmQuotaError, SwarmHub } from "../swarm/hub";
+import type { SwarmContext } from "../swarm/types";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { PreparedSeanceSession } from "./seance";
 import type { PreparedForkSession } from "./fork-from";
@@ -662,6 +664,8 @@ export interface ExecutorOptions {
 	deferIrcWakeRelease?: (release: () => void) => void;
 	/** Internal cleanup grace override for deterministic lifecycle tests. */
 	cleanupGraceMs?: number;
+	/** Swarm membership identity propagated into `AgentSession` and wake monitoring. */
+	swarmContext?: SwarmContext;
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -729,6 +733,8 @@ interface FinalizeSubprocessOutputArgs {
 	lastAssistantText?: string;
 	/** `false` = no `yield` tool: `rawOutput` is the final assistant message, returned verbatim. Default `true`. */
 	structured?: boolean;
+	/** True when the subagent parked cleanly via `swarm_wait` (no prose required). */
+	swarmParked?: boolean;
 }
 
 interface FinalizeSubprocessOutputResult {
@@ -873,9 +879,13 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 	} else if (args.structured === false) {
 		// The final assistant message is the result verbatim; only an empty one fails.
 		if (exitCode === 0 && !rawOutput.trim()) {
-			rawOutput = SUBAGENT_WARNING_EMPTY_MESSAGE;
-			stderr = SUBAGENT_WARNING_EMPTY_MESSAGE;
-			exitCode = 1;
+			if (args.swarmParked) {
+				rawOutput = "Parked in swarm_wait.";
+			} else {
+				rawOutput = SUBAGENT_WARNING_EMPTY_MESSAGE;
+				stderr = SUBAGENT_WARNING_EMPTY_MESSAGE;
+				exitCode = 1;
+			}
 		}
 	} else {
 		const allowFallback = exitCode === 0 && !doneAborted && !signalAborted;
@@ -1385,6 +1395,7 @@ interface SubagentRunMonitor {
 	 * terminating the run. Cleared when {@link waitForYieldTurnStop} settles.
 	 */
 	yieldTurnStopRequested(): boolean;
+	swarmParked(): boolean;
 	/** Resolves when the yield turn-stop session abort has settled (immediately when none fired). */
 	waitForYieldTurnStop(): Promise<void>;
 	/**
@@ -1512,6 +1523,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	let stepsHeld = false;
 	/** The latest yield reported an error (`status: "aborted"`). */
 	let yieldFailed = false;
+	let swarmParked = false;
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -2143,6 +2155,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						consecutiveYieldToolErrors = 0;
 					}
 				}
+				if (event.toolName === "swarm_wait" && !event.isError && isRecord(event.result)) {
+					const resultRecord: Record<string, unknown> = event.result;
+					if (isRecord(resultRecord.details) && resultRecord.details.parked === true) {
+						swarmParked = true;
+					}
+				}
 				flushProgress = true;
 				if (assistantStreaming && !endsRun) {
 					progress.requests += 1;
@@ -2429,6 +2447,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		budgetStopRequested: () => budgetStopRequested,
 		waitForBudgetStop: () => budgetStopAbortPromise ?? Promise.resolve(),
 		yieldInvalidatedByAsync: () => yieldInvalidatedByAsync,
+		swarmParked: () => swarmParked,
 		yieldTurnStopRequested: () => yieldTurnStopRequested,
 		waitForYieldTurnStop: async () => {
 			const pending = yieldTurnStopPromise;
@@ -2535,7 +2554,11 @@ interface DriveOutcome {
  */
 function resultDelivered(outcome: DriveOutcome, monitor: SubagentRunMonitor, structured: boolean): boolean {
 	if (structured) return monitor.yieldCalled();
-	return outcome.exitCode === 0 && !outcome.aborted && monitor.lastReportTurnText() !== undefined;
+	return (
+		outcome.exitCode === 0 &&
+		!outcome.aborted &&
+		(monitor.lastReportTurnText() !== undefined || monitor.swarmParked())
+	);
 }
 
 const MAX_YIELD_RETRIES = 3;
@@ -2888,7 +2911,7 @@ async function driveSessionToResult(
 		const lastAssistant = session.getLastAssistantMessage();
 		if (lastAssistant) {
 			if (lastAssistant.stopReason === "aborted") {
-				if (!monitor.yieldCalled() || monitor.runtimeLimitExceeded()) {
+				if ((!monitor.yieldCalled() && !monitor.swarmParked()) || monitor.runtimeLimitExceeded()) {
 					aborted = monitor.isAbortedRun();
 					if (aborted) {
 						// A real caller signal or the wall-clock timer carries a precise
@@ -2911,7 +2934,8 @@ async function driveSessionToResult(
 		// A budget-stopped run that still produced no result (no yield, or no
 		// clean final message) is a budget abort: surface the precise reason
 		// instead of a generic missing-result failure.
-		const delivered = structured ? monitor.yieldCalled() : lastAssistant?.stopReason === "stop";
+		const parkedCleanly = monitor.swarmParked() && !monitor.runtimeLimitExceeded();
+		const delivered = structured ? monitor.yieldCalled() : lastAssistant?.stopReason === "stop" || parkedCleanly;
 		if (!delivered && monitor.budgetStopRequested() && !aborted) {
 			aborted = true;
 			abortReasonText ??= monitor.resolveAbortReasonText();
@@ -2954,7 +2978,10 @@ async function driveSessionToResult(
 		}
 	} finally {
 		error ??= monitor.terminalError();
-		if (abortSignal.aborted && (!monitor.yieldCalled() || monitor.runtimeLimitExceeded())) {
+		if (
+			abortSignal.aborted &&
+			((!monitor.yieldCalled() && !monitor.swarmParked()) || monitor.runtimeLimitExceeded())
+		) {
 			aborted = monitor.isAbortedRun();
 			if (aborted) {
 				abortReasonText ??= monitor.resolveAbortReasonText();
@@ -2978,6 +3005,7 @@ interface FinalizeRunArgs {
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;
 	/** `false` = no `yield` tool: the run's last report turn is the result verbatim. Default `true`. */
+	swarmParked?: boolean;
 	structured?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -3036,6 +3064,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			outputSchemaSource: args.outputSchemaSource,
 			lastAssistantText: monitor.lastReportTurnText(),
 			structured,
+			swarmParked: monitor.swarmParked(),
 		});
 	} finally {
 		popLoopPhase();
@@ -3235,6 +3264,7 @@ export interface IrcWakeTurnMonitorOptions {
 	/** Fallback session file when the registry ref carries none. */
 	sessionFile?: string;
 	maxRuntimeMs?: number;
+	swarmContext?: SwarmContext;
 	/**
 	 * Whether a turn the owner's own message woke asks for completion estimates
 	 * (see {@link isCompletionProbeEnabled}); a peer-woken turn never does.
@@ -3440,6 +3470,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		// Autonomous IRC wake turns reuse the session's YieldTool just like
 		// runSubagentFollowUpTurn; clear the prior run's incremental-section flag
 		// and retry counters so this wake turn's guards see only its own state.
+		const isSwarmWakeTurn =
+			records.some(record => record.role === "custom" && record.customType === "swarm:wake") ||
+			options.swarmContext !== undefined;
 		resetYieldTurnState(session.getToolByName("yield"));
 		const ircTask =
 			records
@@ -3576,7 +3609,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
 			const budgetExceeded = turnMonitor.abortKind() === "budget";
 			const aborted =
-				runtimeLimitExceeded || budgetExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
+				runtimeLimitExceeded ||
+				budgetExceeded ||
+				(lastAssistant?.stopReason === "aborted" && !yielded && !turnMonitor.swarmParked());
 			// Two error lanes. `error` carries full diagnostics (a thrown turn
 			// error's stack) for `done.error`, logs, and lifecycle. `errorForPeer`
 			// carries only the short, attributed message: a stack trace injected
@@ -3642,6 +3677,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					detached: true,
 					followUpTurn: true,
 					publishMessageResult: ownerWoken || ownerPrompted || userPrompted,
+					swarmParked: turnMonitor.swarmParked(),
 					// A cancelled wake job must not replace the accepted result.
 					signal: jobCancel.signal,
 					sessionFile,
@@ -3710,19 +3746,42 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				// wake turn must still tell whoever woke it, or a `send await:true`
 				// waiter mistakes a dead peer for a healthy-but-silent one.
 				try {
-					await relayWakeTurnOutput({
-						id,
-						records,
-						turnStartTime,
-						yielded,
-						result,
-						turnText,
-						error: errorForPeer,
-						aborted,
-						abortReason,
-						finalizeError,
-						jobOwnerId: wakeJob?.ownerId,
-					});
+					if (options.swarmContext) {
+						if (aborted || errorForPeer !== undefined || finalizeError !== undefined) {
+							const errText =
+								errorForPeer ??
+								abortReason ??
+								(finalizeError instanceof Error
+									? finalizeError.message
+									: String(finalizeError ?? "turn failed"));
+							await SwarmHub.global().reportMemberTurnError(
+								options.swarmContext.swarmDir,
+								options.swarmContext.memberName,
+								errText,
+								isSwarmQuotaError(errText),
+							);
+						} else {
+							await SwarmHub.global().clearMemberError(
+								options.swarmContext.swarmDir,
+								options.swarmContext.memberName,
+							);
+						}
+					}
+					if (!isSwarmWakeTurn) {
+						await relayWakeTurnOutput({
+							id,
+							records,
+							turnStartTime,
+							yielded,
+							result,
+							turnText,
+							error: errorForPeer,
+							aborted,
+							abortReason,
+							finalizeError,
+							jobOwnerId: wakeJob?.ownerId,
+						});
+					}
 				} catch (relayError) {
 					logger.warn("IRC wake-turn relay threw", {
 						id,
@@ -4641,7 +4700,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	const maxRuntimeMs = Math.max(0, Math.trunc(Number(options.maxRuntimeMs ?? cfgTaskMaxRuntimeMs.get(settings)) || 0));
 	// TTL before an adopted idle subagent is parked by the lifecycle manager.
 	// <= 0 disables parking (the session stays live until process teardown).
-	const agentIdleTtlMs = Math.trunc(Number(cfgTaskAgentIdleTtlMs.get(settings)) || 0);
+	const agentIdleTtlMs = options.swarmContext ? 0 : Math.trunc(Number(cfgTaskAgentIdleTtlMs.get(settings)) || 0);
 	const { softRequestBudget, softRequestBudgetNotice } = softRequestBudgetFor(agent.name, settings);
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
@@ -4760,6 +4819,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		outputSchemaMode: options.outputSchemaMode,
 		outputSchemaSource: options.outputSchemaSource,
 		artifactsDir: options.artifactsDir,
+		swarmContext: options.swarmContext,
 	};
 
 	const runSubagent = async (): Promise<{
@@ -5157,6 +5217,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					customTools: options.customTools,
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
+					swarmContext: options.swarmContext,
 					// Seance isolation overrides every inherited field above in one place.
 					...(preparedSession ? seanceIsolationOptions(effectiveCwd) : {}),
 				},

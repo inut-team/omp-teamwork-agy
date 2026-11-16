@@ -47,9 +47,10 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState } from "../goals/state";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { SwarmWakeNotice } from "../swarm/hub";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent, AgentSessionEventListener } from "../session/agent-session-events";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSessionAdvisorOverview,
 	type AgentViewLoop,
@@ -583,6 +584,17 @@ export class RemoteAgentSession implements AgentViewSession {
 	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
 		return roleThinkingLevelForModel(this.settings, this.modelRegistry.getAvailable(), model);
 	}
+	setModel(
+		model: Model,
+		role?: string,
+		options?: {
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+		},
+	): Promise<{ switched: boolean }> {
+		return this.#command("setModel", toWireData(model), role, options);
+	}
 
 	setModelTemporary(
 		model: Model,
@@ -591,7 +603,6 @@ export class RemoteAgentSession implements AgentViewSession {
 	): Promise<void> {
 		return this.#command("setModelTemporary", toWireData(model), thinkingLevel, options);
 	}
-
 	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
 		return resolveRoleModelCycle(
 			this.settings,
@@ -820,6 +831,17 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#command("deliverIrcMessage", msg);
 	}
 
+	deliverSwarmWake(notice: SwarmWakeNotice): Promise<void> {
+		return this.#command("deliverSwarmWake", notice);
+	}
+
+	ensureSessionOnDisk(): Promise<void> {
+		return this.sessionManager.ensureOnDisk();
+	}
+
+	flushSessionTranscript(): Promise<void> {
+		return this.sessionManager.flush();
+	}
 	waitForIrcReplies(): Promise<void> {
 		if (this.#closed !== undefined) return Promise.resolve();
 		return this.#command("waitForIrcReplies");
